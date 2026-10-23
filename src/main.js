@@ -5,11 +5,13 @@ import { UI } from './ui/ui.js';
 import { Controller } from './input.js';
 import { audio } from './audio.js';
 import { buildIconSheet, iconHTML } from './ui/icons.js';
-import { OfflineSession, HostSession, ClientSession, listLobbies } from './net/session.js';
+import { OfflineSession, HostSession, ClientSession, listLobbies, OPEN_ROOM, OPEN_BROKER, probeOpenWorld, newerCopy } from './net/session.js';
 import { listSaves, putSave, getSave, deleteSave } from './saves.js';
 import { TECHS, ITEMS } from './data.js';
 
 const COLORS = ['#f0a64a', '#e8574a', '#5ea2d8', '#73b65b', '#c77ddb', '#e3d34f', '#4fd1c5', '#f2f2f2'];
+const OPEN_SAVE_ID = 'open-world'; // this device's copy of the shared world
+const OPEN_SEED = 20261023;
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const store = {
   get(k, d) { try { const v = localStorage.getItem('ironfield.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
@@ -27,12 +29,19 @@ const app = {
   },
   async saveNow(manual = false) {
     const s = this.session;
-    if (!s || s.mode === 'client' || !s.game) return;
+    if (!s || !s.game || (s.mode === 'client' && !s.open)) return;
     try {
       const g = s.game;
+      const tick = g.tick;
       const bytes = await g.serialize();
-      if (!this.saveId) this.saveId = 'w' + Date.now().toString(36);
-      await putSave({ id: this.saveId, name: g.name, tick: g.tick, date: Date.now(), bytes });
+      if (s.open) {
+        // everyone in the shared world keeps a copy, so it survives even if the broker copy is lost
+        await putSave({ id: OPEN_SAVE_ID, name: g.name, tick, date: Date.now(), bytes, epoch: s.mode === 'host' ? s.epoch : s.hostEpoch });
+        if (s.mode === 'host') s.publishWorld(bytes, tick);
+      } else {
+        if (!this.saveId) this.saveId = 'w' + Date.now().toString(36);
+        await putSave({ id: this.saveId, name: g.name, tick, date: Date.now(), bytes });
+      }
       if (manual) this.ui.toast('保存しました', 'good');
     } catch (e) {
       if (manual) this.ui.toast('保存できませんでした: ' + e.message, 'err');
@@ -97,7 +106,6 @@ function devicePid() {
 function profile() { return { name: store.get('name', '') || 'プレイヤー', color: store.get('color', COLORS[0]), pid: devicePid() }; }
 
 async function enterGame(session) {
-  app.session = session;
   const g = session.game;
   app.renderer.setMap(g);
   const cam = app.renderer.cam;
@@ -106,10 +114,27 @@ async function enterGame(session) {
   document.getElementById('title').hidden = true;
   document.getElementById('hud').hidden = false;
   if (!app.ui) { app.ui = new UI(app); app.ctrl = new Controller(app); }
+  bindSession(session);
   app.ctrl.setMode('normal');
   app.ui.onModeChange();
-  session.on('game', ng => { app.renderer.setMap(ng); });
+  app.running = true;
+  app.lastFrame = performance.now();
+  app.lastSave = performance.now();
+  requestAnimationFrame(frame);
+  if (!store.get('tutorialSeen', false)) {
+    store.set('tutorialSeen', true);
+    setTimeout(() => app.ui.toast('鉱石や木をタップすると手で掘れます。持ち物からクラフトしましょう'), 800);
+    setTimeout(() => app.ui.toast('燃料式採掘機を鉄鉱石の上に置き、前に石の炉を置くと鉄板ができます'), 5200);
+  }
+}
+
+// Makes `session` the live one. Also used mid-game when the shared world changes hands.
+function bindSession(session) {
+  app.session = session;
+  const live = () => app.session === session;
+  session.on('game', ng => { if (live()) app.renderer.setMap(ng); });
   session.on('chat', m => {
+    if (!live()) return;
     const p = app.session.game.players.get(m.pid);
     app.ui.chat(m.name || (p && p.name) || '?', (p && p.color) || '#fff', m.text);
     if (m.pid !== session.localPid) audio.play('chat');
@@ -122,23 +147,107 @@ async function enterGame(session) {
       if (typeof pr.x !== 'number' || typeof pr.y !== 'number') continue;
       list.push({ x: pr.cursorX ?? pr.x, y: pr.cursorY ?? pr.y, name: String(pr.name || '').slice(0, 20), color: pr.color });
     }
-    app.renderer.overlay.cursors = list;
+    if (live()) app.renderer.overlay.cursors = list;
   });
   session.on('status', st => {
-    if (!st) return;
+    if (!st || !live() || st.message === 'Closed') return; // we closed it ourselves
+    if (st.state === 'disconnected' && session.mode === 'client' && session.open) { scheduleTakeover(session); return; }
     if (st.state === 'disconnected') app.ui.toast('ホストとの接続が切れました。メニューからタイトルへ戻れます', 'err');
     if (st.state === 'error') app.ui.toast(st.message || '接続エラー', 'err');
   });
-  session.on('desync', () => app.ui.toast('ずれを直すため同期し直しています…'));
-  session.on('players', () => {});
-  app.running = true;
-  app.lastFrame = performance.now();
-  app.lastSave = performance.now();
-  requestAnimationFrame(frame);
-  if (!store.get('tutorialSeen', false)) {
-    store.set('tutorialSeen', true);
-    setTimeout(() => app.ui.toast('鉱石や木をタップすると手で掘れます。持ち物からクラフトしましょう'), 800);
-    setTimeout(() => app.ui.toast('燃料式採掘機を鉄鉱石の上に置き、前に石の炉を置くと鉄板ができます'), 5200);
+  session.on('desync', () => { if (live()) app.ui.toast('ずれを直すため同期し直しています…'); });
+  session.on('rival', () => { if (live()) yieldToRival(session); });
+}
+
+// ------------------------------------------------------------------ the shared open world
+function joinOpen(joinTimeoutMs) {
+  const p = profile();
+  return ClientSession.create({ room: OPEN_ROOM, broker: OPEN_BROKER, name: p.name, color: p.color, pid: p.pid, joinTimeoutMs, loadGame: bytes => Game.load(bytes) });
+}
+function hostOpen(game, epoch) {
+  const p = profile();
+  return HostSession.create({ game, name: p.name, color: p.color, pid: p.pid, worldName: game.name, open: true, epoch });
+}
+const errText = e => (e && e.message ? e.message : String(e));
+
+// The newest copy of the shared world: the broker's retained copy or this device's own, whichever is later.
+async function newestOpenWorld(remote, lastHost) {
+  let local = null;
+  try { local = await getSave(OPEN_SAVE_ID); } catch { /* no local copy */ }
+  const copies = [];
+  if (remote) copies.push(remote);
+  if (local && local.bytes) copies.push({ bytes: local.bytes, tick: local.tick | 0, epoch: local.epoch | 0 });
+  copies.sort((a, b) => (newerCopy(a.epoch, a.tick, b.epoch, b.tick) ? -1 : 1));
+  const epoch = Math.max(lastHost ? lastHost.e : 0, ...copies.map(c => c.epoch));
+  for (const c of copies) {
+    try { return { game: await Game.load(c.bytes), epoch }; } catch (e) { console.warn('[open] unusable world copy', e); }
+  }
+  return { game: Game.create({ seed: OPEN_SEED, name: 'みんなのワールド' }), epoch };
+}
+
+async function startOpen() {
+  await ensureRenderer();
+  loading('みんなのワールドを探しています…');
+  let probe;
+  try { probe = await probeOpenWorld(); }
+  catch (e) { loading(null); alertTitle('みんなのワールドにつながりませんでした: ' + errText(e)); return; }
+  if (probe.host) {
+    loading('みんなのワールドに入っています…');
+    try {
+      const s = await joinOpen(probe.live ? 20000 : 12000);
+      loading(null);
+      await enterGame(s);
+      app.ui.toast('みんなのワールドに入りました', 'good');
+      return;
+    } catch (e) {
+      if (!/did not answer/.test(errText(e))) { loading(null); alertTitle('入れませんでした: ' + errText(e)); return; }
+    }
+  }
+  // nobody inside: this device opens the world from the newest copy
+  loading('だれもいないので、あなたがワールドを開いています…');
+  try {
+    const { game, epoch } = await newestOpenWorld(probe.world, probe.host);
+    const h = await hostOpen(game, epoch + 1);
+    loading(null);
+    await enterGame(h);
+    app.ui.toast('みんなのワールドを開きました。だれでも入ってこられます', 'good');
+    app.saveNow();
+  } catch (e) {
+    loading(null);
+    alertTitle('ワールドを開けませんでした: ' + errText(e));
+  }
+}
+
+// The host left the shared world. Remaining players take over in join order, a few seconds apart,
+// so normally one of them does; the others see its frames and switch to it on their own.
+function scheduleTakeover(s) {
+  if (s._takeover) return;
+  app.ui.toast('ワールドを動かしていた人が抜けました。引き継いでいます…');
+  const order = s.players.filter(p => p.pid !== s.hostPid).map(p => p.pid);
+  const rank = Math.max(0, order.indexOf(s.localPid));
+  s._takeover = setTimeout(async () => {
+    if (app.session !== s || s.status.state !== 'disconnected' || !s.game) { s._takeover = null; return; }
+    const game = s.game, epoch = s.hostEpoch + 1;
+    s.close();
+    try {
+      bindSession(await hostOpen(game, epoch));
+      app.ui.toast('あなたがワールドを引き継ぎました', 'good');
+      app.saveNow();
+    } catch (e) {
+      app.ui.toast('引き継げませんでした: ' + errText(e), 'err');
+    }
+  }, 1500 + rank * 3000 + Math.random() * 600);
+}
+
+// Another host is running the shared world (we woke from the background, or two of us opened it at once).
+async function yieldToRival(h) {
+  await app.saveNow(); // keep our side on this device
+  h.close();
+  app.ui.toast('別の人がワールドを動かしていたので、そちらに合流します');
+  try {
+    bindSession(await joinOpen(15000));
+  } catch (e) {
+    app.ui.toast('合流できませんでした。タイトルから入り直してください: ' + errText(e), 'err');
   }
 }
 
@@ -197,7 +306,7 @@ function frame(now) {
   const cur = app.mouseTile ? { cursorX: app.mouseTile[0] + 0.5, cursorY: app.mouseTile[1] + 0.5 } : { cursorX: cam.x, cursorY: cam.y };
   s.setPresence({ x: Math.round(cam.x * 10) / 10, y: Math.round(cam.y * 10) / 10, z: Math.round(cam.zoom), ...roundCur(cur), name: p.name, color: p.color });
   if (now - (app.lastAmb || 0) > 200) { app.lastAmb = now; audio.setAmbience(app.renderer.visibleCounts); audio.setDaylight(g.daylight() / 1000); }
-  if (s.mode !== 'client' && now - app.lastSave > 30000) { app.lastSave = now; app.saveNow(); }
+  if ((s.mode !== 'client' || s.open) && now - app.lastSave > 30000) { app.lastSave = now; app.saveNow(); }
 }
 function roundCur(c) { return { cursorX: Math.round(c.cursorX * 10) / 10, cursorY: Math.round(c.cursorY * 10) / 10 }; }
 
@@ -256,8 +365,11 @@ async function showTitle() {
     <div class="section"><h3>あなたの名前</h3>
       <input type="text" id="t-name" maxlength="20" placeholder="プレイヤー" value="${esc(name)}" autocomplete="nickname">
       <div class="colors" id="t-colors">${COLORS.map(c => `<button style="background:${c}" data-c="${c}" class="${c === color ? 'on' : ''}" aria-label="色 ${c}"></button>`).join('')}</div></div>
+    <div class="section"><h3>みんなのワールド</h3>
+      <div class="row"><button class="btn primary" id="t-open" style="flex:1">みんなのワールドに入る</button></div>
+      <div class="muted" style="font-size:12px">だれでも入れる、ひとつの共通の世界です。だれもいないときに入っても、前の続きから遊べます。</div></div>
     <div class="section"><h3>新しいワールド</h3>
-      <div class="row"><button class="btn primary" id="t-host" style="flex:1">サーバーを立てる（だれでも参加可）</button></div>
+      <div class="row"><button class="btn" id="t-host" style="flex:1">自分のワールドを公開する</button></div>
       <div class="row"><button class="btn" id="t-solo" style="flex:1">ひとりで遊ぶ</button>
       <label class="row" style="gap:6px;font-size:13px"><input type="checkbox" id="t-sandbox"> クリエイティブ</label></div></div>
     <div class="section"><h3>部屋に参加</h3>
@@ -279,6 +391,7 @@ async function showTitle() {
   const newGame = () => Game.create({ name: `${(store.get('name', '') || 'プレイヤー')}の工場`, sandbox: $('t-sandbox').checked });
   $('t-solo').onclick = () => { audio.unlock(); saveName(); app.saveId = null; startOffline(newGame()); };
   $('t-host').onclick = () => { audio.unlock(); saveName(); app.saveId = null; startHost(newGame()); };
+  $('t-open').onclick = () => { audio.unlock(); saveName(); app.saveId = null; startOpen(); };
   $('t-join').onclick = () => {
     audio.unlock(); saveName();
     const code = $('t-room').value.toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -286,7 +399,7 @@ async function showTitle() {
     if (room.length < 4) { $('title-msg').textContent = '部屋番号を入れてください'; $('title-msg').hidden = false; return; }
     startClient(room, b);
   };
-  if (inv) $('t-invite').onclick = () => { audio.unlock(); saveName(); startClient(inv.room, inv.broker); };
+  if (inv) $('t-invite').onclick = () => { audio.unlock(); saveName(); if (inv.room === OPEN_ROOM) startOpen(); else startClient(inv.room, inv.broker); };
   $('t-refresh').onclick = () => refreshLobby();
   refreshLobby();
   refreshSaves();
@@ -308,14 +421,15 @@ async function refreshLobby() {
     if (!it) return;
     audio.unlock();
     store.set('name', document.getElementById('t-name').value.trim().slice(0, 20));
-    startClient(it.dataset.room, parseInt(it.dataset.b, 10) || 0);
+    if (it.dataset.room === OPEN_ROOM) startOpen();
+    else startClient(it.dataset.room, parseInt(it.dataset.b, 10) || 0);
   };
 }
 
 async function refreshSaves() {
   const box = document.getElementById('t-saves');
   if (!box) return;
-  const saves = await listSaves();
+  const saves = (await listSaves()).filter(s => s.id !== OPEN_SAVE_ID); // the shared world's copy is not a world of your own
   if (!saves.length) { box.innerHTML = '<div class="muted">まだありません</div>'; return; }
   box.innerHTML = saves.map(s => `<div class="item"><div style="flex:1;min-width:0"><b>${esc(s.name)}</b>
     <div class="muted" style="font-size:12px">${new Date(s.date).toLocaleString('ja-JP')}・${Math.floor(s.tick / 3600)}分</div></div>

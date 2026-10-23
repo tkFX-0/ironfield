@@ -8,6 +8,13 @@ export const BROKERS = [
 ];
 
 const PREFIX = 'ironfield/v1/';
+
+// The shared open world: one fixed room that anyone can enter. Whoever is inside hosts it; when the
+// host leaves, a remaining player takes over, and a retained copy on the broker lets the next visitor
+// resume it when nobody is inside.
+export const OPEN_ROOM = 'PLAZA2';
+export const OPEN_BROKER = 0;
+const MAX_WORLD_CHUNKS = 64; // ~2.3 MB retained world copy
 const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const PID_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
 const ROOM_RE = /^[A-HJ-NP-Z2-9]{6}$/;
@@ -164,6 +171,11 @@ function take(b, now = mono()) {
 }
 
 const num = (v) => (Number.isFinite(v) && Math.abs(v) < 1e7 ? Math.round(v * 100) / 100 : 0);
+// Two hosts in one room (a takeover race, or a frozen phone waking up): the higher epoch wins, then the smaller pid.
+const beats = (e1, p1, e2, p2) => e1 > e2 || (e1 === e2 && p1 < p2);
+// Which of two world copies is newer: a later host epoch, then a later tick.
+export const newerCopy = (e1, t1, e2, t2) => e1 > e2 || (e1 === e2 && t1 > t2);
+const hostOf = (m) => (typeof m.hp === 'string' && PID_RE.test(m.hp) && isInt(m.e) && m.e >= 0 ? { hp: m.hp, e: m.e } : null);
 const yieldNow = () => new Promise((r) => setTimeout(r, 0));
 
 function mqttLib() {
@@ -563,7 +575,9 @@ export class HostSession extends BaseSession {
   constructor(opts) {
     super('host', opts);
     this.worldName = cleanText(opts.worldName, 32) || 'Ironfield';
-    this.room = makeRoomCode();
+    this.open = !!opts.open;
+    this.room = this.open ? OPEN_ROOM : makeRoomCode();
+    this.epoch = isInt(opts.epoch) && opts.epoch >= 0 ? opts.epoch : 0;
     this._pending = []; // [{json, cmd}] applied at the next tick
     this._frameBuf = [];
     this._frameHash = null;
@@ -579,18 +593,23 @@ export class HostSession extends BaseSession {
     this._lobbyAt = -1e9;
     this._unknownReplies = new Map();
     this.stats = { frames: 0, snapshots: 0, replays: 0, droppedCmds: 0 };
+    // Players still marked online in a loaded or taken-over world are gone until they say hello again.
+    for (const p of this.game.players.values()) {
+      if (p.online && p.pid !== this.localPid) this._queueJson(JSON.stringify({ type: 'leave', pid: p.pid }));
+    }
     this._queueJson(JSON.stringify({ type: 'join', pid: this.localPid, name: this.name, color: this.color }));
   }
 
-  static async create({ game, name, color, worldName, pid, broker } = {}) {
+  static async create({ game, name, color, worldName, pid, broker, open, epoch } = {}) {
     if (!game || !isInt(game.tick)) throw new Error('HostSession needs a game');
-    const s = new HostSession({ game, name, color, worldName, pid });
-    await s._connect(isInt(broker) && broker >= 0 && broker < BROKERS.length ? broker : 0);
+    const s = new HostSession({ game, name, color, worldName, pid, open, epoch });
+    await s._connect(open ? OPEN_BROKER : isInt(broker) && broker >= 0 && broker < BROKERS.length ? broker : 0);
     return s;
   }
 
   async _connect(preferred) {
-    const order = [preferred, ...BROKERS.map((_, i) => i).filter((i) => i !== preferred)];
+    // The open world lives on one broker so that everybody meets there.
+    const order = this.open ? [preferred] : [preferred, ...BROKERS.map((_, i) => i).filter((i) => i !== preferred)];
     const lobbyTopic = PREFIX + 'lobby/' + this.room;
     const errors = [];
     let mq = null;
@@ -598,9 +617,10 @@ export class HostSession extends BaseSession {
       this._setStatus('connecting', `Connecting to relay ${i + 1}/${BROKERS.length}`);
       try {
         // queueQoSZero off: frames lost while offline are replayed from history on request.
+        // No last will in the open world: it would fire after a takeover and erase the new host's entry.
         mq = await connectBroker(i, HOST_CONNECT_MS, {
           queueQoSZero: false,
-          will: { topic: lobbyTopic, payload: '', qos: 0, retain: true },
+          ...(this.open ? {} : { will: { topic: lobbyTopic, payload: '', qos: 0, retain: true } }),
         });
         this.brokerIndex = i;
         break;
@@ -626,7 +646,9 @@ export class HostSession extends BaseSession {
 
   _onConnect() {
     if (this._closed) return;
-    this._mq.subscribe([this._t('up'), this._t('p'), this._t('chat')], { qos: 0 });
+    const topics = [this._t('up'), this._t('p'), this._t('chat')];
+    if (this.open) topics.push(this._t('down'), this._lobbyTopic); // to notice a rival host; whose lobby entry is up
+    this._mq.subscribe(topics, { qos: 0 });
     this._publishLobby();
     // Publish again shortly: a stale last-will from the previous connection may clear it.
     this._lobbyAt = mono() - LOBBY_MS + 5000;
@@ -670,7 +692,7 @@ export class HostSession extends BaseSession {
   _publishFrame() {
     const p = this._lastFrameTick;
     const t = this.game.tick;
-    let s = `{"k":"f","p":${p},"t":${t}`;
+    let s = `{"k":"f","p":${p},"t":${t},"hp":"${this.localPid}","e":${this.epoch}`;
     if (this._frameBuf.length) s += `,"c":[${this._frameBuf.join(',')}]`;
     if (this._frameHash) s += `,"h":${this._frameHash[0]},"ht":${this._frameHash[1]}`;
     if (this._acks.size) s += `,"a":${JSON.stringify(Object.fromEntries(this._acks))}`;
@@ -734,7 +756,29 @@ export class HostSession extends BaseSession {
       if (i % 4 === 3) await yieldNow();
       if (this._closed) return;
     }
-    this._pub(topic, JSON.stringify({ k: 'se', id, t: T, n }));
+    this._pub(topic, JSON.stringify({ k: 'se', id, t: T, n, hp: this.localPid, e: this.epoch }));
+  }
+
+  /** Leaves a retained copy of the world on the broker, alternating two slots so a half-written copy
+   *  never replaces the only whole one. Every chunk carries the tick and epoch it belongs to. */
+  publishWorld(bytes, tick) {
+    const n = Math.max(1, Math.ceil(bytes.length / CHUNK_RAW));
+    if (!this.open || !this._mq || !this._mq.connected || n > MAX_WORLD_CHUNKS || this._closed) return false;
+    this._worldSlot = this._worldSlot ? 0 : 1;
+    const slot = this._worldSlot;
+    const id = randomString(6, PID_ALPHABET);
+    for (let i = 0; i < n; i++) {
+      const d = toB64(bytes.subarray(i * CHUNK_RAW, (i + 1) * CHUNK_RAW));
+      this._pub(this._t(`save/${slot}/${i}`), JSON.stringify({ k: 'w', id, i, n, t: tick, e: this.epoch, d }), { retain: true, qos: 1 }, PRIO_CTRL, `w${slot}/${i}`);
+    }
+    return true;
+  }
+
+  _onRival(m) {
+    const h = hostOf(m);
+    if (!h || h.hp === this.localPid || this._yielded || !beats(h.e, h.hp, this.epoch, this.localPid)) return;
+    this._yielded = true; // the other host keeps the world; main switches us to a client
+    this._emit('rival', h);
   }
 
   // Re-sends frames after tick `from` to one client. Returns false if history does not reach back.
@@ -765,6 +809,16 @@ export class HostSession extends BaseSession {
   _onMessage(topic, payload) {
     if (this._closed) return;
     if (topic === this._t('up')) return this._onUp(parseMsg(payload, MAX_UP_BYTES));
+    if (topic === this._t('down')) {
+      const f = parseMsg(payload, MAX_DOWN_BYTES);
+      if (f && f.k === 'f') this._onRival(f);
+      return;
+    }
+    if (topic === this._lobbyTopic) {
+      const l = parseMsg(payload, MAX_SMALL_BYTES);
+      this._lobbyOwner = l && typeof l.hp === 'string' ? l.hp : null;
+      return;
+    }
     const m = parseMsg(payload, MAX_SMALL_BYTES);
     if (!m) return;
     if (topic === this._t('p') && m.k === 'p') this._onPresence(m);
@@ -884,8 +938,9 @@ export class HostSession extends BaseSession {
     const info = {
       room: this.room, broker: this.brokerIndex, world: this.worldName, host: this.name,
       players: 1 + [...this._clients.values()].filter((c) => c.inWorld).length,
-      tick: this.game.tick, v: 1, ts: Date.now(),
+      tick: this.game.tick, v: 1, ts: Date.now(), hp: this.localPid, e: this.epoch,
     };
+    if (this.open) info.open = true;
     this._pub(this._lobbyTopic, JSON.stringify(info), { retain: true }, PRIO_LOW, 'lobby');
   }
 
@@ -897,8 +952,9 @@ export class HostSession extends BaseSession {
     this._setStatus('disconnected', 'Closed');
     if (!this._mq) return Promise.resolve();
     this._outbox.q[PRIO_LOW] = []; // presence/lobby refreshes are moot now
-    this._pub(this._t('down'), '{"k":"end"}', null, PRIO_FRAME);
-    this._pub(this._lobbyTopic, '', { retain: true }, PRIO_FRAME); // clear the retained lobby entry
+    this._pub(this._t('down'), `{"k":"end","hp":"${this.localPid}"}`, null, PRIO_FRAME);
+    // Clear the retained lobby entry, unless (in the open world) another host's entry has replaced ours.
+    if (!this.open || !this._lobbyOwner || this._lobbyOwner === this.localPid) this._pub(this._lobbyTopic, '', { retain: true }, PRIO_FRAME);
     return (this._closing = this._endTransport());
   }
 }
@@ -910,6 +966,9 @@ export class ClientSession extends BaseSession {
     super('client', opts);
     this.room = opts.room;
     this.brokerIndex = opts.broker;
+    this.open = opts.room === OPEN_ROOM;
+    this._host = null; // {hp, e} of the host we follow
+    this._joinGiveupMs = isInt(opts.joinTimeoutMs) && opts.joinTimeoutMs > 0 ? opts.joinTimeoutMs : JOIN_GIVEUP_MS;
     this._loadGame = opts.loadGame;
     this._recvTick = -1; // newest contiguous tick received
     this._cmds = new Map(); // tick -> cmds
@@ -933,13 +992,16 @@ export class ClientSession extends BaseSession {
     this.stats = { frames: 0, gaps: 0, snapshots: 0, desyncs: 0 };
   }
 
-  static async create({ room, broker, name, color, loadGame, pid, onStatus } = {}) {
+  get hostEpoch() { return this._host ? this._host.e : 0; }
+  get hostPid() { return this._host ? this._host.hp : null; }
+
+  static async create({ room, broker, name, color, loadGame, pid, onStatus, joinTimeoutMs } = {}) {
     room = String(room || '').toUpperCase();
     broker = Number(broker ?? 0);
     if (!ROOM_RE.test(room)) throw new Error('Invalid room code');
     if (!isInt(broker) || broker < 0 || broker >= BROKERS.length) throw new Error('Invalid broker index');
     if (typeof loadGame !== 'function') throw new Error('ClientSession needs loadGame');
-    const s = new ClientSession({ room, broker, name, color, loadGame, pid, game: null });
+    const s = new ClientSession({ room, broker, name, color, loadGame, pid, joinTimeoutMs, game: null });
     if (typeof onStatus === 'function') s.on('status', onStatus);
     try {
       await s._start();
@@ -1021,7 +1083,7 @@ export class ClientSession extends BaseSession {
       if (!m) return;
       if (m.k === 'f') {
         const f = readFrame(m);
-        if (!f) return;
+        if (!f || !this._followHost(hostOf(m))) return;
         // Heartbeat acks and the player list ride along in live frames.
         const ack = m.a && typeof m.a === 'object' ? m.a[this.localPid] : undefined;
         if (Number.isFinite(ack)) {
@@ -1038,6 +1100,7 @@ export class ClientSession extends BaseSession {
         this._span = Math.max(f.t - f.p, this._span - 0.05);
         this._ingestFrame(f, true);
       } else if (m.k === 'end') {
+        if (this._host && m.hp !== undefined && m.hp !== this._host.hp) return; // a host we do not follow
         this._hostEnded = true;
         this._setStatus('disconnected', 'The host closed the world');
       }
@@ -1076,6 +1139,9 @@ export class ClientSession extends BaseSession {
       case 'se': {
         const s = this._snaps.get(m.id);
         if (!s || !isInt(m.t) || m.t < 0) return;
+        const h = hostOf(m);
+        if (h && this._host && h.hp !== this._host.hp) return; // from a host we do not follow
+        if (h && !this._host) this._host = h;
         s.t = m.t;
         return this._maybeLoad(m.id);
       }
@@ -1096,6 +1162,28 @@ export class ClientSession extends BaseSession {
         return;
       }
     }
+  }
+
+  // Returns false for frames from a host other than ours. A better host (a takeover) replaces ours:
+  // its timeline is unrelated, so everything received so far is dropped and a fresh snapshot is fetched.
+  _followHost(h) {
+    if (!h) return true; // an older host build without ids
+    const cur = this._host;
+    if (!cur) { this._host = h; return true; }
+    if (cur.hp === h.hp) { cur.e = h.e; return true; }
+    if (!beats(h.e, h.hp, cur.e, cur.hp)) return false;
+    this._host = h;
+    this._hostEnded = false;
+    this._recent = [];
+    this._ahead = [];
+    this._cmds.clear();
+    this._expected.clear();
+    this._snaps.clear();
+    this._gapSince = 0;
+    if (this.game) this._recvTick = this.game.tick; // hold still until the new snapshot is in
+    this._awaitSnap = null;
+    this._requestSnapshot(true);
+    return false;
   }
 
   _wantsSnapshot() {
@@ -1285,7 +1373,7 @@ export class ClientSession extends BaseSession {
     const now = mono();
     const a = this._awaitSnap;
     if (a) {
-      if (a.initial && now - a.since > JOIN_GIVEUP_MS) return this._fail('Could not join: the host did not answer');
+      if (a.initial && now - a.since > this._joinGiveupMs) return this._fail('Could not join: the host did not answer');
       if (!a.initial && now - a.since > JOIN_GIVEUP_MS) {
         this._awaitSnap = null;
         this._snapWanted = true; // retried after the resync cooldown
@@ -1345,6 +1433,70 @@ export class ClientSession extends BaseSession {
     this._sayBye();
     return (this._closing = this._endTransport());
   }
+}
+
+// ---------------------------------------------------------------- open world probe
+
+/** Reads what the open world has on its broker: is someone hosting it right now (live frames, or else a
+ *  fresh retained lobby entry), and the newest complete retained world copy.
+ *  Returns {host: {hp, e} | null, live: bool, world: {bytes, tick, epoch} | null}. */
+export async function probeOpenWorld(listenMs = 2000) {
+  const mq = await connectBroker(OPEN_BROKER, CLIENT_CONNECT_MS, { reconnectPeriod: 0 });
+  const lobbyTopic = PREFIX + 'lobby/' + OPEN_ROOM;
+  const downTopic = PREFIX + OPEN_ROOM + '/down';
+  const base = PREFIX + OPEN_ROOM + '/save/';
+  const chunkRe = /^([01])\/(\d{1,2})$/;
+  let lobby = null;
+  let live = null; // host seen sending frames during the probe
+  const slots = [new Map(), new Map()];
+  mq.on('message', (topic, payload) => {
+    if (topic === downTopic) {
+      const m = parseMsg(payload, MAX_DOWN_BYTES);
+      const h = m && m.k === 'f' && hostOf(m);
+      if (h && (!live || beats(h.e, h.hp, live.e, live.hp))) live = h;
+      return;
+    }
+    if (topic === lobbyTopic) {
+      const m = parseMsg(payload, MAX_SMALL_BYTES);
+      const h = m && hostOf(m);
+      if (h && m.v === 1 && Number.isFinite(m.ts) && Math.abs(Date.now() - m.ts) < LOBBY_MAX_AGE_MS) {
+        lobby = { ...h, players: isInt(m.players) && m.players >= 0 && m.players <= 64 ? m.players : 0 };
+      } else lobby = null;
+      return;
+    }
+    const tm = topic.startsWith(base) && chunkRe.exec(topic.slice(base.length));
+    if (!tm) return;
+    const m = parseMsg(payload, MAX_TO_BYTES);
+    const i = Number(tm[2]);
+    if (!m || m.k !== 'w' || m.i !== i || typeof m.id !== 'string' || m.id.length > 16) return;
+    if (!isInt(m.n) || m.n < 1 || m.n > MAX_WORLD_CHUNKS || i >= m.n || !isInt(m.t) || m.t < 0 || !isInt(m.e) || m.e < 0) return;
+    if (typeof m.d !== 'string' || m.d.length > CHUNK_B64 || !B64_RE.test(m.d)) return;
+    slots[Number(tm[1])].set(i, m);
+  });
+  await new Promise((resolve) => {
+    const t = setTimeout(resolve, CLIENT_CONNECT_MS);
+    mq.subscribe([lobbyTopic, downTopic, base + '+/+'], { qos: 0 }, () => { clearTimeout(t); resolve(); });
+  });
+  await new Promise((r) => setTimeout(r, listenMs)); // retained messages arrive right after subscribing
+  try { mq.end(true); } catch {}
+  let world = null;
+  for (const parts of slots) {
+    const first = parts.get(0);
+    if (!first) continue;
+    const list = [];
+    for (let i = 0; i < first.n; i++) {
+      const c = parts.get(i);
+      if (!c || c.id !== first.id || c.n !== first.n) break;
+      list.push(fromB64(c.d));
+    }
+    if (list.length !== first.n) continue; // incomplete or mixed copy
+    if (world && !newerCopy(first.e, first.t, world.epoch, world.tick)) continue;
+    const bytes = new Uint8Array(list.reduce((a, b) => a + b.length, 0));
+    let off = 0;
+    for (const r of list) { bytes.set(r, off); off += r.length; }
+    world = { bytes, tick: first.t, epoch: first.e };
+  }
+  return { host: live || lobby, live: !!live, world };
 }
 
 // ---------------------------------------------------------------- lobby discovery
