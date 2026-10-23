@@ -111,6 +111,13 @@ h3 { font-size: 14px; color: var(--amber-hi); text-transform: none; }
 #buildbar { align-self: center; display: flex; align-items: center; gap: 8px; padding: 5px 6px 5px 10px; max-width: 100%; }
 #buildbar .name { font-weight: 700; color: var(--title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40vw; }
 #buildbar .hint { font-size: 11px; color: var(--muted); }
+/* looking round another prefecture's plot: nothing to build with */
+body.viewing #dock, body.viewing #buildbar, body.viewing #goal-chip, body.viewing #flag-chip { display: none !important; }
+#viewbar { align-self: center; display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; max-width: 100%; }
+#viewbar[hidden] { display: none; }
+#viewbar .name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#viewbar .hint { font-size: 11px; color: var(--muted); }
+#viewbar .btn { white-space: nowrap; }
 #dock { display: flex; gap: 6px; align-items: stretch; }
 #dock .side { display: flex; gap: 6px; padding: 5px; }
 #quickbar { flex: 1; min-width: 0; padding: 5px; display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; }
@@ -123,7 +130,7 @@ h3 { font-size: 14px; color: var(--amber-hi); text-transform: none; }
 #chatlog div { background: rgba(20, 19, 20, .72); padding: 3px 8px; border-radius: 4px; font-size: 13px; animation: tin .2s; }
 #labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 #labels .plabel { position: absolute; transform: translate(-50%, -150%); font-size: 12px; font-weight: 700; padding: 1px 6px; border-radius: 3px; background: rgba(0, 0, 0, .55); white-space: nowrap; }
-#labels .plabel.nb { transform: translate(-50%, -50%); font-size: 14px; padding: 3px 10px; background: rgba(0, 0, 0, .62); letter-spacing: .04em; }
+#labels .plabel.nb { pointer-events: auto; cursor: pointer; transform: translate(-50%, -50%); font-size: 14px; padding: 3px 10px; background: rgba(0, 0, 0, .62); letter-spacing: .04em; }
 #quickmenu { position: absolute; display: flex; gap: 6px; padding: 6px; transform: translate(-50%, calc(-100% - 18px)); }
 
 /* ------------------------------------------------ sheets (panels) */

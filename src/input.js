@@ -36,7 +36,10 @@ export class Controller {
   get me() { return this.game.players.get(this.app.session.localPid); }
 
   // --------------------------------------------------------------- modes
+  // looking round another prefecture's plot: no building or removing
+  get viewing() { return this.app.session.mode === 'view'; }
   selectItem(item) {
+    if (this.viewing) { this.app.submit(); return; }
     if (!item || !ITEMS[item] || !ITEMS[item].place) { this.setMode('normal'); return; }
     if (this.mode === 'build' && this.buildItem === item && !this.pending) { this.setMode('normal'); return; }
     this.clearPending();
@@ -48,6 +51,7 @@ export class Controller {
     this._updateHoverGhost();
   }
   setMode(m) {
+    if (this.viewing && m !== 'normal') { this.app.submit(); m = 'normal'; }
     this.mode = m;
     if (m !== 'build') this.buildItem = null;
     this.pending = null;

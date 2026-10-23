@@ -5,7 +5,7 @@ import { UI } from './ui/ui.js';
 import { Controller } from './input.js';
 import { audio } from './audio.js';
 import { buildIconSheet, iconHTML } from './ui/icons.js';
-import { HostSession, ClientSession, listLobbies, OPEN_BROKER, probeOpenWorld, newerCopy, plotRoom, plotOfRoom } from './net/session.js';
+import { HostSession, ClientSession, ViewSession, listLobbies, OPEN_BROKER, probeOpenWorld, newerCopy, plotRoom, plotOfRoom } from './net/session.js';
 import { putSave, getSave } from './saves.js';
 import { TECHS, ITEMS } from './data.js';
 import { JintoriView } from './jintori/view.js';
@@ -51,6 +51,7 @@ const app = {
     stopNeighbours();
     this.ui && this.ui.closeSheet();
     document.getElementById('hud').hidden = true;
+    document.body.classList.remove('viewing');
     if (app.jintori) app.jintori.close();
     showTitle();
   },
@@ -118,6 +119,7 @@ async function enterGame(session) {
   document.getElementById('hud').hidden = false;
   if (!app.ui) { app.ui = new UI(app); app.ctrl = new Controller(app); app.jintori = new JintoriView(app, app.jintoriStore); }
   bindSession(session);
+  document.body.classList.toggle('viewing', session.mode === 'view');
   app.ctrl.setMode('normal');
   app.ui.onModeChange();
   app.running = true;
@@ -158,6 +160,8 @@ function bindSession(session) {
     if (st.state === 'disconnected') app.ui.toast('ホストとの接続が切れました。メニューからタイトルへ戻れます', 'err');
     if (st.state === 'error') app.ui.toast(st.message || '接続エラー', 'err');
   });
+  let told = 0;
+  session.on('viewonly', () => { if (live() && performance.now() - told > 2500) { told = performance.now(); app.ui.toast('見に来ているだけなので、さわれません'); } });
   session.on('desync', () => { if (live()) app.ui.toast('ずれを直すため同期し直しています…'); });
   session.on('rival', () => { if (live()) yieldToRival(session); });
 }
@@ -218,6 +222,41 @@ async function watchNeighbours(pref) {
     await new Promise(res => setTimeout(res, NEIGHBOUR_REFRESH_MS));
   }
 }
+
+// Look round another prefecture's plot: its newest saved copy runs here only (net/session.js ViewSession).
+// Every minute a newer copy, if any, replaces it, so what you see follows the real plot with a short delay.
+const VIEW_REFRESH_MS = 60 * 1000;
+async function viewPlot(pref) {
+  const P = PREFS[pref], room = plotRoom(pref);
+  await ensureRenderer();
+  loading(`${P.name}の区画を見に行っています…`);
+  let probe = {}, game = null;
+  try { probe = await probeOpenWorld(room); } catch { /* fall back to this device's copy */ }
+  try { ({ game } = await newestPlot(pref, probe.world, null)); }
+  catch (e) { loading(null); alertTitle(`${P.name}の区画を開けませんでした: ` + errText(e)); return; }
+  const p = profile();
+  const s = await ViewSession.create({ game, room, name: p.name, color: p.color, pid: p.pid });
+  s.seen = { tick: game.tick, epoch: probe.world ? probe.world.epoch : 0 };
+  loading(null);
+  await enterGame(s);
+  app.ui.toast(probe.world || game.ents.size ? `${P.name}の区画を見ています（見るだけ）` : `${P.name}の区画は、まだだれも作っていません`, 'good');
+  watchNeighbours(pref);
+  const run = neighbourRun; // stopNeighbours() (leaving the plot) ends this loop too
+  while (true) {
+    await new Promise(res => setTimeout(res, VIEW_REFRESH_MS));
+    if (run !== neighbourRun || app.session !== s) return;
+    try {
+      const probe2 = await probeOpenWorld(room);
+      const w = probe2.world;
+      if (!w || !newerCopy(w.epoch, w.tick, s.seen.epoch, s.seen.tick)) continue;
+      const ng = await Game.load(w.bytes);
+      if (run !== neighbourRun || app.session !== s) return;
+      s.seen = w;
+      s.replaceGame(ng);
+    } catch (e) { console.warn('[view] refresh', errText(e)); }
+  }
+}
+app.viewPlot = async p => { await app.quitToTitle(); viewPlot(p); };
 
 async function enterPlot(pref) {
   const P = PREFS[pref], room = plotRoom(pref);
@@ -370,7 +409,7 @@ async function showTitle() {
       <div class="muted" style="font-size:12px">ひとつの大きなワールドを、47の都道府県の区画に分けています。自分の県の区画で、同じ県の人と工場を作ります。</div>
       <div class="plots" id="t-plots" style="grid-template-columns:repeat(${PLOT_COLS},1fr);grid-template-rows:repeat(${PLOT_ROWS},1fr)">${tiles.join('')}</div>
       <div class="muted" id="t-plot-note" style="font-size:12px;min-height:1.5em"></div>
-      <div class="row"><button class="btn primary" id="t-enter" style="flex:1"></button></div></div>
+      <div class="row"><button class="btn primary" id="t-enter" style="flex:1"></button><button class="btn" id="t-view" hidden>見に行く</button></div></div>
     <div class="muted" style="font-size:11px;text-align:center">iPhone では共有ボタンから「ホーム画面に追加」すると全画面で遊べます</div>
   </div>`;
   const $ = id => document.getElementById(id);
@@ -390,14 +429,15 @@ async function showTitle() {
       const p = +b.dataset.p, n = people.get(p) || 0;
       b.classList.toggle('on', p === pick);
       b.classList.toggle('busy', n > 0);
-      b.disabled = locked && p !== js.pref;
       b.title = `${PREFS[p].name}${n ? `（${n}人）` : ''}`;
     }
     const P = PREFS[pick], n = people.get(pick) || 0;
-    $('t-enter').disabled = !pick;
+    const other = !!pick && pick !== js.pref; // looking round another prefecture is always allowed
+    $('t-enter').disabled = !pick || (locked && other);
     $('t-enter').textContent = P ? `${P.name}の区画に入る` : '県をえらんでください';
-    $('t-plot-note').textContent = locked
-      ? 'このシーズンは陣取りで旗を使ったので、県は来月まで変えられません'
+    $('t-view').hidden = !other;
+    $('t-plot-note').textContent = locked && other
+      ? 'このシーズンは陣取りで旗を使ったので、県は来月まで変えられません。「見に行く」で見るだけはできます'
       : P ? (n ? `いま${n}人が作業しています` : 'いまはだれもいません。入ると、あなたが区画を開きます') : '';
   };
   $('t-plots').onclick = e => {
@@ -413,6 +453,11 @@ async function showTitle() {
     audio.unlock(); saveName();
     if (pick !== js.pref && !js.choosePref(pick)) { alertTitle('県を変えられませんでした'); return; }
     enterPlot(pick);
+  };
+  $('t-view').onclick = () => {
+    if (!pick) return;
+    audio.unlock(); saveName();
+    viewPlot(pick);
   };
   paint();
   // how many people are in each plot right now (each plot's host keeps a lobby entry up to date)

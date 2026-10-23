@@ -6,7 +6,7 @@ import { isFuel, smeltRecipe, drillArea } from '../sim/machines.js';
 import { isRotatable } from '../sim/game.js';
 import { plotOfRoom } from '../net/session.js';
 import { PREFS } from '../jintori/japan.js';
-import { PLOT_AT, plotAtCell } from '../plots.js';
+import { PLOT_AT, PLOT_COLS, PLOT_ROWS, plotAtCell } from '../plots.js';
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtN = n => (n >= 10000 ? (n / 1000).toFixed(n >= 100000 ? 0 : 1) + 'k' : String(n));
@@ -68,6 +68,7 @@ export class UI {
       <div id="sheet" class="sheet panel" hidden role="dialog"><header id="sheet-head"></header><div class="body" id="sheet-body"></div></div>
       <div id="quickmenu" class="panel" hidden></div>
       <div id="bottom">
+        <div id="viewbar" class="panel" hidden></div>
         <div id="buildbar" class="panel" hidden></div>
         <div id="dock">
           <div class="side panel">
@@ -173,10 +174,18 @@ export class UI {
       case 'sound': app.audio.setMuted(!app.audio.muted); this.refresh(true); break;
       case 'save': app.saveNow(true); break;
       case 'quit': app.quitToTitle(); break;
+      case 'visit': this.closeSheet(); app.audio.play('click'); if (+d.p === app.jintoriStore.pref) this._goHome(); else app.viewPlot(+d.p); break;
+      case 'go-home': this.closeSheet(); this._goHome(); break;
       case 'give': sub({ type: 'give', item: d.item, count: 50 }); break;
       case 'home': { const s = this.g.spawn; app.renderer.cam.x = s.x; app.renderer.cam.y = s.y; this.closeSheet(); break; }
       default: break;
     }
+  }
+
+  // back to your own prefecture's plot (or the title, if you came to look before choosing one)
+  _goHome() {
+    const p = this.app.jintoriStore.pref;
+    if (p) this.app.movePlot(p); else this.app.quitToTitle();
   }
 
   // ------------------------------------------------------------ public api
@@ -347,6 +356,7 @@ export class UI {
     else if (this.sheet === 'build') [head, body] = this._sheetBuild();
     else if (this.sheet === 'tech') [head, body] = this._sheetTech();
     else if (this.sheet === 'menu') [head, body] = this._sheetMenu();
+    else if (this.sheet === 'visit') [head, body] = this._sheetVisit();
     else if (this.sheet === 'entity') [head, body] = this._sheetEntity(this.selected);
     const sig = head + body;
     if (!force && sig === this.lastSig) return;
@@ -408,14 +418,24 @@ export class UI {
     const st = s.status || {};
     const n = (s.players || []).length || [...g.players.values()].filter(p => p.online).length;
     const plot = PREFS[plotOfRoom(s.room)];
-    const mode = s.mode === 'offline' ? 'ひとり' : plot ? plot.short : s.mode === 'host' ? 'ホスト' : '参加中';
-    const col = st.state === 'playing' || s.mode === 'offline' ? '#8fd16f' : st.state === 'disconnected' || st.state === 'error' ? '#ff7a6a' : '#ffcf7a';
+    const viewing = s.mode === 'view';
+    const mode = s.mode === 'offline' ? 'ひとり' : viewing ? '見学' : plot ? plot.short : s.mode === 'host' ? 'ホスト' : '参加中';
+    const col = st.state === 'playing' || s.mode === 'offline' || viewing ? '#8fd16f' : st.state === 'disconnected' || st.state === 'error' ? '#ff7a6a' : '#ffcf7a';
     const jt = this.app.jintori && this.app.jintori.chipText();
     if (jt) {
       const sig = jt.allow + ':' + jt.flags;
       if (this._flagSig !== sig) { this._flagSig = sig; this.el('flag-chip').innerHTML = `${iconHTML('item:flag', 22)}<span>陣取り</span><b>${jt.flags}</b><span class="muted">今日あと${jt.allow}本</span>`; }
     }
-    this.el('netbadge').innerHTML = `<span class="dot" style="background:${col}"></span>${mode}${s.mode !== 'offline' ? ` ${SVG.people.replace('<svg', '<svg style="width:14px;height:14px"')} ${n}` : ''}`;
+    this.el('netbadge').innerHTML = `<span class="dot" style="background:${col}"></span>${mode}${s.mode !== 'offline' && !viewing ? ` ${SVG.people.replace('<svg', '<svg style="width:14px;height:14px"')} ${n}` : ''}`;
+    const vb = this.el('viewbar');
+    vb.hidden = !viewing;
+    const here = String(plotOfRoom(s.room));
+    if (viewing && vb.dataset.p !== here) {
+      vb.dataset.p = here;
+      vb.innerHTML = `<div style="min-width:0"><div class="name" style="color:${plot ? plot.color : '#fff'}">${esc(plot ? plot.name : '')}の区画</div><div class="hint">見るだけ・さわれません</div></div>
+        <button class="btn" data-a="sheet" data-s="visit">ほかの県</button>
+        <button class="btn primary" data-a="go-home">${this.app.jintoriStore.pref ? '自分の区画へ戻る' : 'タイトルへ'}</button>`;
+    }
   }
   _renderGoal() {
     const g = this.g, me = this.me;
@@ -455,11 +475,11 @@ export class UI {
     if (at) {
       const cam = r.cam, cx = Math.max(6, Math.min(g.W - 6, cam.x)), cy = Math.max(6, Math.min(g.H - 6, cam.y));
       for (const [dc, dr, wx, wy] of [[1, 0, g.W + 5, cy], [-1, 0, -5, cy], [0, -1, cx, -3], [0, 1, cx, g.H + 6]]) {
-        const P = PREFS[plotAtCell(at.c + dc, at.r + dr)];
+        const np = plotAtCell(at.c + dc, at.r + dr), P = PREFS[np];
         if (!P) continue;
         const [sx, sy] = r.worldToScreen(wx, wy);
         if (sx < 0 || sy < 0 || sx > r.gl.canvas.width || sy > r.gl.canvas.height) continue;
-        html += `<div class="plabel nb" style="left:${sx / dpr}px;top:${sy / dpr}px;color:${P.color}">${esc(P.name)}の区画</div>`;
+        html += `<div class="plabel nb" data-a="visit" data-p="${np}" role="button" tabindex="0" style="left:${sx / dpr}px;top:${sy / dpr}px;color:${P.color}">${esc(P.name)}の区画 ›</div>`;
       }
     }
     if (html !== this._lastLabels) { box.innerHTML = html; this._lastLabels = html; }
@@ -640,11 +660,29 @@ export class UI {
     return [head, b];
   }
 
+  // the 47 plots, laid out like the title screen: tap one to go and look
+  _sheetVisit() {
+    const mine = this.app.jintoriStore.pref, here = plotOfRoom(this.app.session.room);
+    const tiles = [];
+    for (const [pref, { c, r }] of PLOT_AT) {
+      const P = PREFS[pref];
+      tiles.push(`<button class="plot${P.short.length > 2 ? ' l3' : ''}${pref === here ? ' on' : ''}" data-a="visit" data-p="${pref}" style="grid-column:${c + 1};grid-row:${r + 1};--pc:${P.color}" aria-label="${esc(P.name)}${pref === mine ? '（自分の県）' : ''}">${pref === mine ? '自分' : esc(P.short)}<i></i></button>`);
+    }
+    const head = '<h2>ほかの県を見に行く</h2>';
+    const b = `<div class="muted" style="font-size:12px">県をえらぶと、その区画の工場を見に行けます。見るだけで、建てたりこわしたりはできません。最新の保存を1分ごとに読み直します。「自分」を押すと自分の区画へ戻ります。</div>
+      <div class="plots" style="grid-template-columns:repeat(${PLOT_COLS},1fr);grid-template-rows:repeat(${PLOT_ROWS},1fr)">${tiles.join('')}</div>`;
+    return [head, b];
+  }
+
   _sheetMenu() {
     const s = this.app.session, g = this.g;
     const head = `<h2>${esc(g.name)}</h2>`;
     let b = '';
-    if (s.mode !== 'offline') {
+    const mine = this.app.jintoriStore.pref, here = plotOfRoom(s.room);
+    b += `<div class="section"><h3>ほかの県の区画</h3>
+      <div class="row"><button class="btn" data-a="sheet" data-s="visit">ほかの県を見に行く</button>${s.mode === 'view' ? `<button class="btn primary" data-a="go-home">${mine ? '自分の区画へ戻る' : 'タイトルへ'}</button>` : ''}</div>
+      <div class="muted" style="font-size:12px">${s.mode === 'view' ? `いまは${esc(PREFS[here] ? PREFS[here].name : '')}の区画を見に来ています。見るだけで、建てたりこわしたりはできません。` : 'ほかの県の工場を見て回れます（見るだけ）。区画の境に出ている県の名前をタップしても行けます。'}</div></div>`;
+    if (s.mode === 'host' || s.mode === 'client') {
       const url = this.app.shareUrl();
       b += `<div class="section"><h3>友だちをさそう</h3>
         <div class="sharebox"><code class="inset">${esc(url)}</code></div>
@@ -669,7 +707,7 @@ export class UI {
     b += `<div class="section"><h3>設定</h3><div class="row">
       <button class="btn" data-a="sound">${this.app.audio.muted ? '音を出す' : '音を消す'}</button>
       <button class="btn" data-a="home">スタート地点へ</button>
-      ${s.mode !== 'client' ? '<button class="btn" data-a="save">今すぐ保存</button>' : ''}
+      ${s.mode === 'host' ? '<button class="btn" data-a="save">今すぐ保存</button>' : ''}
       <button class="btn danger" data-a="quit">タイトルへ</button></div>
       ${matchMedia('(any-pointer: fine)').matches ? `<div class="row"><button class="btn ${this.app.ctrl.touchLike ? 'on' : ''}" data-a="touchlike" aria-pressed="${this.app.ctrl.touchLike}">マウスでもスマホと同じ操作</button></div>` : ''}
       <div class="muted" style="font-size:12px">スマホ: 1本指で移動、2本指で拡大縮小。建物は長押しで回転・撤去。<br>

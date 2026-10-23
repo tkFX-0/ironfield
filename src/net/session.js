@@ -577,6 +577,28 @@ export class OfflineSession extends BaseSession {
   }
 }
 
+// ---------------------------------------------------------------- view
+
+// Looking round another prefecture's plot: a saved copy of it runs on this device only.
+// Nothing reaches the plot's real game, and it is never saved (no `open`, so app.saveNow skips it).
+export class ViewSession extends OfflineSession {
+  constructor(opts) {
+    super(opts);
+    this.mode = 'view';
+    this.room = opts.room;
+    this.players = [];
+  }
+  static async create(opts) { return new ViewSession(opts); }
+  submit() { this._emit('viewonly'); }
+  // a newer saved copy of the plot came in
+  replaceGame(game) {
+    this.game = game;
+    this._pending = [];
+    this._queueJson(JSON.stringify({ type: 'join', pid: this.localPid, name: this.name, color: this.color }));
+    this._emit('game', game);
+  }
+}
+
 // ---------------------------------------------------------------- host
 
 export class HostSession extends BaseSession {
