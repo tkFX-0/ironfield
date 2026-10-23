@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ironfield Audio Test</title>
+<style>
+  :root { color-scheme: dark; --bg: #1b1d1f; --panel: #26292c; --fg: #e4e1d8; --dim: #9a968c; --acc: #e0a040; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 14px; margin: 0 0 8px; color: var(--acc); text-transform: uppercase; letter-spacing: .06em; }
+  p.hint { color: var(--dim); margin: 0 0 12px; }
+  section { background: var(--panel); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
+  button { background: #3a3e42; color: var(--fg); border: 1px solid #4a4f54; border-radius: 6px; padding: 10px 6px; font: inherit; cursor: pointer; touch-action: manipulation; }
+  button:active { background: #50555a; }
+  label.row { display: grid; grid-template-columns: 90px 1fr 48px; align-items: center; gap: 8px; margin: 4px 0; }
+  label.row span:last-child { text-align: right; font-variant-numeric: tabular-nums; color: var(--dim); }
+  input[type=range] { width: 100%; }
+  pre { margin: 0; font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; color: var(--dim); }
+  .inline { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>Ironfield audio test</h1>
+<p class="hint">Tap anywhere first to unlock audio (required on iPhone).</p>
+
+<section>
+  <h2>Master</h2>
+  <label class="row"><span>Volume</span><input id="vol" type="range" min="0" max="1" step="0.01" value="1"><span id="vol-v">1.00</span></label>
+  <label class="row"><span>Daylight</span><input id="day" type="range" min="0" max="1" step="0.01" value="1"><span id="day-v">1.00</span></label>
+  <label><input id="mute" type="checkbox"> Muted</label>
+</section>
+
+<section>
+  <h2>One-shots</h2>
+  <label class="row"><span>volume</span><input id="o-volume" type="range" min="0" max="1.5" step="0.01" value="1"><span id="o-volume-v">1.00</span></label>
+  <label class="row"><span>pan</span><input id="o-pan" type="range" min="-1" max="1" step="0.01" value="0"><span id="o-pan-v">0.00</span></label>
+  <label class="row"><span>pitch</span><input id="o-pitch" type="range" min="0.5" max="2" step="0.01" value="1"><span id="o-pitch-v">1.00</span></label>
+  <div class="grid" id="sounds"></div>
+  <div class="inline">
+    <button id="drag">Drag belts (place x20 @ 30 ms)</button>
+    <button id="mine">Mining loop (mine-hit x8)</button>
+    <button id="flood">Voice cap test (40 sounds at once)</button>
+  </div>
+</section>
+
+<section>
+  <h2>Ambience (machines near camera)</h2>
+  <div id="amb"></div>
+  <div class="inline">
+    <button data-preset="none">Nothing</button>
+    <button data-preset="small">Starter base</button>
+    <button data-preset="mid">Mid base</button>
+    <button data-preset="mega">Megabase</button>
+  </div>
+</section>
+
+<section>
+  <h2>Stats</h2>
+  <pre id="stats">locked</pre>
+</section>
+
+<script type="module">
+import { audio } from '../src/audio.js';
+
+const SOUNDS = ['place', 'remove', 'rotate', 'click', 'open', 'close', 'error', 'craft-start', 'craft-done',
+  'research-done', 'mine-hit', 'mine-wood', 'pickup', 'chat', 'join', 'rocket-launch', 'alert'];
+const KEYS = ['belts', 'drills', 'furnaces', 'assemblers', 'engines', 'inserters', 'pumps', 'labs'];
+const PRESETS = {
+  none: {},
+  small: { belts: 12, drills: 6, furnaces: 4, inserters: 5, engines: 1, pumps: 1 },
+  mid: { belts: 60, drills: 20, furnaces: 24, assemblers: 12, inserters: 40, engines: 4, pumps: 2, labs: 6 },
+  mega: { belts: 300, drills: 80, furnaces: 120, assemblers: 90, inserters: 250, engines: 20, pumps: 6, labs: 40 },
+};
+const $ = (id) => document.getElementById(id);
+
+// unlock on every gesture is cheap; the module ignores repeats
+for (const ev of ['touchend', 'click']) document.addEventListener(ev, () => audio.unlock(), { capture: true });
+
+function bindRange(id, fn) {
+  const el = $(id), out = $(id + '-v');
+  const upd = () => { out.textContent = (+el.value).toFixed(2); fn(+el.value); };
+  el.addEventListener('input', upd);
+  upd();
+}
+bindRange('vol', (v) => audio.setMasterVolume(v));
+bindRange('day', (v) => audio.setDaylight(v));
+$('mute').addEventListener('change', (e) => audio.setMuted(e.target.checked));
+
+const opts = () => ({ volume: +$('o-volume').value, pan: +$('o-pan').value, pitch: +$('o-pitch').value });
+for (const id of ['o-volume', 'o-pan', 'o-pitch']) bindRange(id, () => {});
+
+const grid = $('sounds');
+for (const name of SOUNDS) {
+  const b = document.createElement('button');
+  b.textContent = name;
+  b.addEventListener('click', () => { audio.unlock(); audio.play(name, opts()); });
+  grid.appendChild(b);
+}
+$('drag').addEventListener('click', () => {
+  let i = 0;
+  const t = setInterval(() => { audio.play('place', { ...opts(), pan: (i / 10 - 1) * 0.6 }); if (++i >= 20) clearInterval(t); }, 30);
+});
+$('mine').addEventListener('click', () => {
+  let i = 0;
+  const t = setInterval(() => { audio.play('mine-hit', opts()); if (++i >= 8) clearInterval(t); }, 450);
+});
+$('flood').addEventListener('click', () => {
+  let ok = 0;
+  for (let i = 0; i < 40; i++) ok += audio.play(SOUNDS[i % SOUNDS.length], opts()) ? 1 : 0;
+  console.log('flood accepted', ok, 'of 40');
+});
+
+const amb = $('amb'), levels = {};
+for (const k of KEYS) {
+  levels[k] = 0;
+  const row = document.createElement('label');
+  row.className = 'row';
+  row.innerHTML = `<span>${k}</span><input type="range" min="0" max="300" step="1" value="0"><span>0</span>`;
+  const [, input, out] = row.children;
+  input.addEventListener('input', () => { levels[k] = +input.value; out.textContent = input.value; audio.setAmbience(levels); });
+  input.dataset.key = k;
+  amb.appendChild(row);
+}
+for (const b of document.querySelectorAll('[data-preset]')) {
+  b.addEventListener('click', () => {
+    const p = PRESETS[b.dataset.preset];
+    for (const input of amb.querySelectorAll('input')) {
+      const k = input.dataset.key;
+      levels[k] = p[k] || 0;
+      input.value = levels[k];
+      input.nextElementSibling.textContent = levels[k];
+    }
+    audio.setAmbience(levels);
+  });
+}
+
+const db = (x) => (x > 0 ? (20 * Math.log10(x)).toFixed(1) : '-inf');
+let peakHold = 0, peakAt = 0;
+function frame() {
+  const s = audio.debugStats();
+  let meter = '';
+  if (s.state === 'running') {
+    const m = audio.debugMeter();
+    if (m) {
+      const now = performance.now();
+      if (m.peak > peakHold || now - peakAt > 1500) { peakHold = m.peak; peakAt = now; }
+      meter = `\nrms ${db(m.rms)} dBFS   peak(hold) ${db(peakHold)} dBFS`;
+    }
+  }
+  $('stats').textContent =
+    `context ${s.state} @ ${s.sampleRate} Hz   muted ${audio.muted}\n` +
+    `sfx voices ${s.voices}/12   ambient shots ${s.ambShots}   live nodes ${s.liveNodes}\n` +
+    `layers [${s.layers.join(', ')}]   norm ${s.norm.toFixed(2)}   quiet ${s.quiet.toFixed(2)}` + meter;
+  requestAnimationFrame(frame);
+}
+frame();
+</script>
+</body>
+</html>

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ironfield Sprite Sheet</title>
+<!-- Serve the ironfield folder over http (ES modules do not load from file://), e.g.
+     npx http-server C:\Users\81903\Documents\Playground\ironfield -p 8137 -c-1
+     then open http://localhost:8137/tools/sprite-sheet.html -->
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #15171a; color: #cfd3d6; font: 12px/1.35 system-ui, sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: #1d2024ee; padding: 8px 16px; display: flex; flex-wrap: wrap; gap: 14px; align-items: center; border-bottom: 1px solid #2c3036; }
+  header b { color: #fff; }
+  h2 { margin: 18px 16px 6px; font-size: 14px; color: #e6c35a; font-weight: 600; }
+  .grid { display: flex; flex-wrap: wrap; gap: 10px; padding: 0 16px; align-items: flex-end; }
+  .cell { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .cell canvas { background-color: #2a2d31; background-image: linear-gradient(45deg, #34383d 25%, transparent 25%, transparent 75%, #34383d 75%), linear-gradient(45deg, #34383d 25%, transparent 25%, transparent 75%, #34383d 75%); background-size: 16px 16px; background-position: 0 0, 8px 8px; image-rendering: auto; }
+  .cell span { font: 10px ui-monospace, monospace; color: #9aa1a8; max-width: 260px; overflow-wrap: anywhere; text-align: center; }
+  label { display: inline-flex; gap: 4px; align-items: center; }
+  .grass .cell canvas { background: #4a5a32; }
+</style>
+</head>
+<body>
+<header>
+  <b>Ironfield sprites</b>
+  <span id="stats">building...</span>
+  <label>scale <select id="scale"><option>0.5</option><option selected>1</option><option>2</option></select></label>
+  <label><input type="checkbox" id="fp"> footprint + anchor</label>
+  <label><input type="checkbox" id="anim" checked> animate</label>
+  <label><input type="checkbox" id="grass"> grass background</label>
+</header>
+<div id="out"></div>
+<script type="module">
+import * as S from '../src/render/sprites.js';
+import { ENTITIES } from '../src/data.js';
+
+// 1) register + draw everything into 2048x2048 shelf-packed canvases, like the renderer's atlas does
+const list = [];
+console.time('registerSprites');
+const t0 = performance.now();
+S.registerSprites((key, w, h, draw, opts = {}) => list.push({ key, w, h, draw, ax: opts.ax || 0, ay: opts.ay || 0, rot: !!opts.rot }));
+const order = list.map((s, i) => i).sort((a, b) => list[b].h - list[a].h || list[b].w - list[a].w);
+const layers = []; let x = 2048, y = 0, rowH = 0;
+for (const i of order) {
+  const s = list[i], w = s.w + 6, h = s.h + 6;
+  if (x + w > 2048) { x = 0; y += rowH; rowH = 0; }
+  if (!layers.length || y + h > 2048) { const c = document.createElement('canvas'); c.width = c.height = 2048; layers.push(c); x = 0; y = 0; rowH = 0; }
+  s.layer = layers.length - 1; s.px = x + 3; s.py = y + 3; x += w; rowH = Math.max(rowH, h);
+}
+const ctxs = layers.map(c => c.getContext('2d'));
+const errors = [];
+for (const s of list) {
+  const ctx = ctxs[s.layer];
+  ctx.save(); ctx.beginPath(); ctx.rect(s.px, s.py, s.w, s.h); ctx.clip(); ctx.translate(s.px, s.py);
+  try { s.draw(ctx, s.w, s.h); } catch (e) { errors.push(s.key); console.error('sprite failed', s.key, e); }
+  ctx.restore();
+}
+for (const c of ctxs) c.getImageData(0, 0, 1, 1); // force any deferred GPU work to finish before timing
+const ms = performance.now() - t0;
+console.timeEnd('registerSprites');
+const area = list.reduce((a, s) => a + s.w * s.h, 0);
+window.SPRITE_STATS = { count: list.length, area, ms, layers: layers.length, errors };
+document.getElementById('stats').textContent = `${list.length} sprites, ${(area / 1e6).toFixed(2)} MPx, ${layers.length} atlas layers, register+draw ${ms.toFixed(0)} ms${errors.length ? ', ERRORS: ' + errors.join(' ') : ''}`;
+
+// 2) review grid
+const groupOf = (k) => {
+  const p = k.split(':');
+  if (p[0] === 'ent') return 'ent:' + p[1];
+  if (p[0] === 'belt') return 'belt:' + p[1] + ':' + p[2];
+  if (p[0] === 'ore') return 'ore:' + p[1];
+  if (p[0] === 'ins') return 'ins';
+  if (p[0] === 'item' || p[0] === 'fluid' || p[0] === 'icon') return 'items / fluids / icons';
+  return p[0];
+};
+const footprint = (k) => {
+  const p = k.split(':');
+  if (p[0] === 'ent') { const e = ENTITIES[p[1]]; if (!e) return null; const d = +p[2]; return (d === 1 || d === 3) ? [e.h, e.w] : [e.w, e.h]; }
+  if (['tree', 'deadtree', 'rock', 'pipe', 'ore', 'oil', 'belt', 'ub', 'pipe-port'].includes(p[0])) return [1, 1];
+  if (p[0] === 'splitter') return [2, 1];
+  return null;
+};
+const out = document.getElementById('out');
+const cells = [];
+const frameSets = new Map();
+let curGroup = null, grid = null;
+for (const s of list) {
+  const g = groupOf(s.key);
+  if (g !== curGroup) { curGroup = g; const h = document.createElement('h2'); h.textContent = g; out.appendChild(h); grid = document.createElement('div'); grid.className = 'grid'; out.appendChild(grid); }
+  const m = s.key.match(/^(.*):f(\d+)$/) || s.key.match(/^(belt:\d:\w+):(\d+)$/);
+  if (m) { const base = m[1]; if (!frameSets.has(base)) frameSets.set(base, []); frameSets.get(base).push(s); if (+m[2] !== 0) continue; }
+  const cell = document.createElement('div'); cell.className = 'cell';
+  const c = document.createElement('canvas'); const label = document.createElement('span');
+  label.textContent = s.key + `  ${s.w}x${s.h}` + (s.ax || s.ay ? ` a(${s.ax},${s.ay})` : '') + (s.rot ? ' rot' : '');
+  cell.append(c, label); grid.appendChild(cell);
+  cells.push({ s, c, base: m ? m[1] : null });
+}
+function paint(cell, s) {
+  const sc = +document.getElementById('scale').value, c = cell.c;
+  c.width = Math.ceil(s.w * sc); c.height = Math.ceil(s.h * sc);
+  c.style.width = c.width + 'px'; c.style.height = c.height + 'px';
+  const ctx = c.getContext('2d'); ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(layers[s.layer], s.px, s.py, s.w, s.h, 0, 0, c.width, c.height);
+  if (document.getElementById('fp').checked) {
+    const f = footprint(s.key);
+    ctx.save(); ctx.scale(sc, sc);
+    if (f) { ctx.strokeStyle = 'rgba(80,220,255,.8)'; ctx.lineWidth = 1 / sc; ctx.strokeRect(s.ax + 0.5, s.ay + 0.5, f[0] * 64 - 1, f[1] * 64 - 1); }
+    ctx.strokeStyle = '#ff3b3b'; ctx.beginPath(); ctx.moveTo(s.ax - 5, s.ay); ctx.lineTo(s.ax + 5, s.ay); ctx.moveTo(s.ax, s.ay - 5); ctx.lineTo(s.ax, s.ay + 5); ctx.stroke();
+    const name = s.key.split(':')[1];
+    const wa = S.WIRE_ANCHORS[name]; if (wa && s.key.startsWith('ent:')) { ctx.fillStyle = '#ff0'; ctx.fillRect(s.ax + wa[0] - 2, s.ay + wa[1] - 2, 4, 4); }
+    let sp = S.SMOKE_POINTS[name]; if (sp && !Array.isArray(sp)) sp = sp[+s.key.split(':')[2] || 0];
+    if (sp && s.key.startsWith('ent:')) for (const [px, py] of sp) { ctx.fillStyle = '#0f0'; ctx.fillRect(s.ax + px - 2, s.ay + py - 2, 4, 4); }
+    ctx.restore();
+  }
+}
+const repaint = () => cells.forEach(cl => paint(cl, cl.cur || cl.s));
+repaint();
+document.getElementById('scale').onchange = repaint;
+document.getElementById('fp').onchange = repaint;
+document.getElementById('grass').onchange = (e) => out.classList.toggle('grass', e.target.checked);
+let tick = 0;
+setInterval(() => {
+  if (!document.getElementById('anim').checked) return;
+  tick++;
+  for (const cl of cells) if (cl.base) { const fr = frameSets.get(cl.base); cl.cur = fr[tick % fr.length]; paint(cl, cl.cur); }
+}, 110);
+</script>
+</body>
+</html>

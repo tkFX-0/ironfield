@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ironfield net test</title>
+<style>
+  body { font: 14px/1.4 ui-monospace, Menlo, Consolas, monospace; margin: 16px; background: #111; color: #ddd; }
+  button, select { font: inherit; padding: 6px 10px; }
+  pre { white-space: pre-wrap; word-break: break-word; }
+  .pass { color: #6c6; } .fail { color: #f66; }
+</style>
+<script src="../src/vendor/mqtt.min.js"></script>
+</head>
+<body>
+<h1>Ironfield net test</h1>
+<p>Runs a host and two clients in this tab against a real public broker (about 1 minute).</p>
+<label>Broker <select id="broker"></select></label>
+<button id="run">Run</button>
+<pre id="out"></pre>
+<script type="module">
+  import * as net from '../src/net/session.js';
+  import { runNetTest } from './net-test-core.js';
+  const sel = document.getElementById('broker');
+  net.BROKERS.forEach((b, i) => sel.add(new Option(`${i}: ${b}`, i)));
+  const q = new URLSearchParams(location.search);
+  if (q.has('b')) sel.value = q.get('b');
+  const out = document.getElementById('out');
+  const log = (line) => {
+    const span = document.createElement('span');
+    span.className = line.startsWith('PASS') ? 'pass' : line.startsWith('FAIL') ? 'fail' : '';
+    span.textContent = line + '\n';
+    out.appendChild(span);
+  };
+  async function run() {
+    out.textContent = '';
+    document.getElementById('run').disabled = true;
+    window.__netTest = { done: false };
+    const results = await runNetTest(net, { broker: Number(sel.value), log });
+    window.__netTest = { done: true, results };
+    document.getElementById('run').disabled = false;
+  }
+  document.getElementById('run').onclick = run;
+  if (q.has('auto')) run();
+</script>
+</body>
+</html>
