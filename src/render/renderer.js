@@ -6,7 +6,7 @@ import { hash2 } from '../sim/util.js';
 import { inserterTiles, drillArea } from '../sim/machines.js';
 import { dims } from '../sim/game.js';
 import { landscape } from '../sim/worldgen.js';
-import { PLOT_AT, coastDist } from '../plots.js';
+import { PLOT_AT, plotAtCell, coastDist } from '../plots.js';
 
 const T = 64;
 const HALF_PI = Math.PI / 2;
@@ -16,7 +16,7 @@ const TIER = { 'transport-belt': 0, 'fast-transport-belt': 1, 'express-transport
   'express-underground-belt': 2, splitter: 0, 'fast-splitter': 1, 'express-splitter': 2 };
 const BELT_TPS = [1.875, 3.75, 5.625]; // tiles per second
 const AROUND = 64; // tiles of the neighbouring plots shown around a plot of the big world
-const DIM = rgba(0.58, 0.6, 0.64, 1);
+const DIM = rgba(0.02, 0.04, 0.08, 0.45); // laid over the neighbouring plots
 
 export class Renderer {
   constructor(canvas, spritesModule) {
@@ -51,8 +51,8 @@ export class Renderer {
     this.stamp = new Uint32Array(game.nextId + 100000);
   }
 
-  // The land around a plot of the big world (the neighbours' landscape as it was generated; their buildings
-  // are not shown yet). Kept per plot: only the middle, your own plot, changes between games.
+  // The land around a plot of the big world, as the neighbours' landscape was generated (their buildings come
+  // from their saved copies, see _drawAround). Kept per plot: only the middle, your own plot, changes between games.
   _aroundOf(g) {
     if (!g.plot || !PLOT_AT.has(g.plot)) return null;
     if (this._around && this._around.plot === g.plot) return this._around;
@@ -98,9 +98,35 @@ export class Renderer {
     const x0 = cam.x - wT / 2, y0 = cam.y - hT / 2;
     gl.drawTerrain(x0, y0, wT, hT, this.time, cam.zoom);
     gl.begin(cam.x * T, cam.y * T, cam.zoom / T);
+    const far = cam.zoom < 22 * (window.devicePixelRatio || 1);
+    const counts = { belts: 0, drills: 0, furnaces: 0, assemblers: 0, engines: 0, inserters: 0, pumps: 0, labs: 0 };
+    const lights = [];
+    if (this.around) this._drawAround(g, x0, y0, wT, hT, far, lights);
     const tx0 = Math.max(0, Math.floor(x0) - 2), ty0 = Math.max(0, Math.floor(y0) - 2);
     const tx1 = Math.min(g.W - 1, Math.ceil(x0 + wT) + 2), ty1 = Math.min(g.H - 1, Math.ceil(y0 + hT) + 4);
-    const far = cam.zoom < 22 * (window.devicePixelRatio || 1);
+    const ents = this._drawScene(g, tx0, ty0, tx1, ty1, far, lights, counts);
+    // status icons
+    if (!far) for (const e of ents) this._drawStatus(e);
+    // particles
+    this._updateParticles(dt);
+    // night
+    const night = 1 - g.daylight() / 1000;
+    if (night > 0.01) {
+      gl.quad((cam.x - wT) * T, (cam.y - hT) * T, wT * 2 * T, hT * 2 * T, null, rgba(0.02, 0.03, 0.08, 0.72 * night));
+      gl.setAdditive(true);
+      const lc = night;
+      for (const L of lights) this.drawScaled('fx:light', L.x, L.y, L.r * 2, rgba(L.c[0], L.c[1], L.c[2], L.a * lc));
+      gl.setAdditive(false);
+    }
+    this._drawOverlay(g, localPid);
+    gl.flush();
+    this.visibleCounts = counts;
+  }
+
+  // Ground, buildings, trees and rocks of tiles tx0..tx1, ty0..ty1 of game g, in g's own coordinates.
+  // Returns the buildings it drew.
+  _drawScene(g, tx0, ty0, tx1, ty1, far, lights, counts) {
+    this.sceneGame = g;
     this._drawGround(g, tx0, ty0, tx1, ty1, far);
 
     // gather visible entities (scan occupancy with a margin for big sprites)
@@ -117,7 +143,6 @@ export class Renderer {
       }
     }
     // belts first (ground level), then their items
-    const counts = { belts: 0, drills: 0, furnaces: 0, assemblers: 0, engines: 0, inserters: 0, pumps: 0, labs: 0 };
     const tick = g.tick;
     for (const e of ents) {
       const k = e._kind;
@@ -137,43 +162,61 @@ export class Renderer {
       if (k === 'belt') continue;
       sorted.push({ y: e.y + e._h, x: e.x, e });
     }
-    // trees and rocks, also on the neighbouring plots around yours
-    const a = this.around, m = a ? AROUND : 0;
-    const ex0 = Math.max(-m, Math.floor(x0) - 2), ex1 = Math.min(W - 1 + m, Math.ceil(x0 + wT) + 2);
-    const ey0 = Math.max(-m, Math.floor(y0) - 2), ey1 = Math.min(g.H - 1 + m, Math.ceil(y0 + hT) + 6);
-    for (let y = ey0; y <= ey1; y++) {
-      for (let x = ex0; x <= ex1; x++) {
-        const inside = x >= 0 && y >= 0 && x < W && y < g.H;
-        const d = inside ? g.decor[y * W + x] : a.decor[(y + m) * a.w + x + m];
-        if (d) sorted.push({ y: y + 1, x, d, tx: x, ty: y, out: !inside });
+    for (let y = ty0; y <= Math.min(g.H - 1, ty1 + 2); y++) {
+      const row = y * W;
+      for (let x = tx0; x <= tx1; x++) {
+        const d = g.decor[row + x];
+        if (d) sorted.push({ y: y + 1, x, d, tx: x, ty: y });
       }
     }
     sorted.sort((a, b) => a.y - b.y || a.x - b.x);
-    const night = 1 - g.daylight() / 1000;
-    const lights = [];
     for (const it of sorted) {
-      if (it.d) { this._drawDecor(it.d, it.tx, it.ty, it.out ? DIM : WHITE); continue; }
+      if (it.d) { this._drawDecor(it.d, it.tx, it.ty); continue; }
       this._drawEntity(it.e, tick, lights, counts);
     }
     // inserter arms on top
     for (const e of ents) if (e._kind === 'inserter') this._drawInserterArm(e);
     // wires
     for (const e of ents) if (e._kind === 'pole') this._drawWires(g, e);
-    // status icons
-    if (!far) for (const e of ents) this._drawStatus(e);
-    // particles
-    this._updateParticles(dt);
-    // night
-    if (night > 0.01) {
-      gl.quad((cam.x - wT) * T, (cam.y - hT) * T, wT * 2 * T, hT * 2 * T, null, rgba(0.02, 0.03, 0.08, 0.72 * night));
-      gl.setAdditive(true);
-      const lc = night;
-      for (const L of lights) this.drawScaled('fx:light', L.x, L.y, L.r * 2, rgba(L.c[0], L.c[1], L.c[2], L.a * lc));
-      gl.setAdditive(false);
+    this.sceneGame = this.game;
+    return ents;
+  }
+
+  // The neighbouring plots, AROUND tiles deep around yours: their saved copy when we have one
+  // (this.neighbours, from main.js), else the land and trees they were generated with. Then dimmed.
+  _drawAround(g, x0, y0, wT, hT, far, lights) {
+    const gl = this.gl, cam = this.cam, a = this.around, W = g.W, H = g.H;
+    const at = PLOT_AT.get(g.plot);
+    const sink = { belts: 0, drills: 0, furnaces: 0, assemblers: 0, engines: 0, inserters: 0, pumps: 0, labs: 0 }; // not ours: no factory sounds
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+      if (!dc && !dr) continue;
+      const ox = dc * W, oy = dr * H;
+      // the part of that cell on screen and within AROUND tiles of our plot, in the cell's own coordinates
+      const cx0 = Math.max(0, -AROUND - ox, Math.floor(x0) - 2 - ox), cx1 = Math.min(W - 1, W - 1 + AROUND - ox, Math.ceil(x0 + wT) + 2 - ox);
+      const cy0 = Math.max(0, -AROUND - oy, Math.floor(y0) - 2 - oy), cy1 = Math.min(H - 1, H - 1 + AROUND - oy, Math.ceil(y0 + hT) + 6 - oy);
+      if (cx0 > cx1 || cy0 > cy1) continue;
+      const ng = this.neighbours && this.neighbours.get(plotAtCell(at.c + dc, at.r + dr));
+      if (ng && ng.W === W && ng.H === H) {
+        gl.begin((cam.x - ox) * T, (cam.y - oy) * T, cam.zoom / T);
+        this._sox = ox * T; this._soy = oy * T;
+        const n0 = lights.length;
+        this._drawScene(ng, cx0, cy0, cx1, cy1, far, lights, sink);
+        for (let i = n0; i < lights.length; i++) { lights[i].x += ox * T; lights[i].y += oy * T; }
+        this._sox = this._soy = 0;
+        gl.begin(cam.x * T, cam.y * T, cam.zoom / T);
+      } else {
+        for (let y = cy0; y <= cy1; y++) for (let x = cx0; x <= cx1; x++) {
+          const d = a.decor[(y + oy + AROUND) * a.w + x + ox + AROUND];
+          if (d) this._drawDecor(d, x + ox, y + oy);
+        }
+      }
     }
-    this._drawOverlay(g, localPid);
-    gl.flush();
-    this.visibleCounts = counts;
+    // dim it all: it is not yours
+    const q = (x, y, w, h) => gl.quad(x * T, y * T, w * T, h * T, null, DIM);
+    q(-AROUND, -AROUND, W + AROUND * 2, AROUND);
+    q(-AROUND, H, W + AROUND * 2, AROUND);
+    q(-AROUND, 0, AROUND, H);
+    q(W, 0, AROUND, H);
   }
 
   // ------------------------------------------------------------------ ground: ores, decals
@@ -256,7 +299,7 @@ export class Renderer {
     return Math.floor(e._anim || 0) % frames;
   }
   _pipeMask(e) {
-    const g = this.game;
+    const g = this.sceneGame || this.game;
     if (e._mt === g._topo) return e._mask;
     let m = 0;
     for (let d = 0; d < 4; d++) {
@@ -426,7 +469,7 @@ export class Renderer {
     if (pts && !Array.isArray(pts)) pts = pts[dir || 0];
     const p = pts && pts.length ? pts[(Math.random() * pts.length) | 0] : [e._w * 32, 0];
     if (this.particles.length > 400) return;
-    this.particles.push({ x: x + p[0], y: y + p[1], vx: 6 + Math.random() * 6, vy: -18 - Math.random() * 10, life: 0, max: 2.5 + Math.random(), key, s: 22 + Math.random() * 10 });
+    this.particles.push({ x: x + p[0] + (this._sox || 0), y: y + p[1] + (this._soy || 0), vx: 6 + Math.random() * 6, vy: -18 - Math.random() * 10, life: 0, max: 2.5 + Math.random(), key, s: 22 + Math.random() * 10 });
   }
   _updateParticles(dt) {
     const out = [];

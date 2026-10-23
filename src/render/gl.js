@@ -83,9 +83,9 @@ void main(){
   vec2 fw=fract(w);
   float gl=step(fw.x,1./uPx)+step(fw.y,1./uPx);
   col*= 1.-min(gl,1.)*.06*smoothstep(24.,60.,uPx);
-  // the neighbouring plots around yours: dimmed, with a line along your plot's border
+  // a line along your plot's border (the renderer dims the neighbouring plots beyond it)
   float e=max(max(-w.x,w.x-uPlot.x),max(-w.y,w.y-uPlot.y));
-  if(e>0.) col=mix(col,vec3(dot(col,vec3(.3,.5,.2))),.35)*.62;
+  if(e>0.) col=mix(col,vec3(dot(col,vec3(.3,.5,.2))),.3);
   col=mix(col,vec3(1.,.8,.45),.75*(1.-smoothstep(.0,max(.07,2.5/uPx),abs(e))));
   // outside the map
   vec2 m=w-uMapOrigin;

@@ -11,7 +11,7 @@ import { TECHS, ITEMS } from './data.js';
 import { JintoriView } from './jintori/view.js';
 import { LocalJintori } from './jintori/store.js';
 import { PREFS } from './jintori/japan.js';
-import { PLOT_AT, PLOT_COLS, PLOT_ROWS, plotSeed, plotPlace } from './plots.js';
+import { PLOT_AT, PLOT_COLS, PLOT_ROWS, plotSeed, plotPlace, plotAtCell } from './plots.js';
 
 const COLORS = ['#f0a64a', '#e8574a', '#5ea2d8', '#73b65b', '#c77ddb', '#e3d34f', '#4fd1c5', '#f2f2f2'];
 const plotSaveId = p => 'plot2-' + p; // this device's copy of a prefecture plot (2: land runs on across plot borders)
@@ -48,6 +48,7 @@ const app = {
     this.running = false;
     if (this.session) this.session.close();
     this.session = null;
+    stopNeighbours();
     this.ui && this.ui.closeSheet();
     document.getElementById('hud').hidden = true;
     if (app.jintori) app.jintori.close();
@@ -173,7 +174,8 @@ function hostOpen(room, game, epoch) {
 const errText = e => (e && e.message ? e.message : String(e));
 
 // The newest copy of a plot: the broker's retained copy or this device's own, whichever is later.
-async function newestPlot(pref, remote, lastHost) {
+// Without any copy, a new plot (or null when `create` is false).
+async function newestPlot(pref, remote, lastHost, create = true) {
   let local = null;
   try { local = await getSave(plotSaveId(pref)); } catch { /* no local copy */ }
   const copies = [];
@@ -184,7 +186,37 @@ async function newestPlot(pref, remote, lastHost) {
   for (const c of copies) {
     try { return { game: await Game.load(c.bytes), epoch }; } catch (e) { console.warn('[plot] unusable world copy', e); }
   }
-  return { game: Game.create({ seed: plotSeed(pref), name: `${PREFS[pref].name}の区画`, plot: pref, at: plotPlace(pref) }), epoch };
+  return { game: create ? Game.create({ seed: plotSeed(pref), name: `${PREFS[pref].name}の区画`, plot: pref, at: plotPlace(pref) }) : null, epoch };
+}
+
+// The neighbouring plots' saved copies, drawn around yours (renderer._drawAround). Read one at a time in the
+// background after you enter, then again every few minutes: they are a view, not a live game.
+const NEIGHBOUR_REFRESH_MS = 5 * 60 * 1000;
+let neighbourRun = 0;
+function stopNeighbours() {
+  neighbourRun++;
+  if (app.renderer) app.renderer.neighbours = null;
+}
+async function watchNeighbours(pref) {
+  stopNeighbours();
+  const run = neighbourRun, live = () => run === neighbourRun;
+  const map = app.renderer.neighbours = new Map();
+  const { c, r } = PLOT_AT.get(pref);
+  const at = steps => steps.map(([dc, dr]) => plotAtCell(c + dc, r + dr)).filter(Boolean);
+  const sides = at([[1, 0], [-1, 0], [0, -1], [0, 1]]), corners = at([[1, 1], [-1, 1], [1, -1], [-1, -1]]);
+  const read = async p => {
+    try {
+      const probe = await probeOpenWorld(plotRoom(p));
+      const { game } = live() ? await newestPlot(p, probe.world, null, false) : {};
+      if (live() && game) map.set(p, game);
+    } catch (e) { console.warn('[plot] neighbour', p, errText(e)); }
+  };
+  while (live()) {
+    // the sides first (most of what you see), each group at once
+    await Promise.all(sides.map(read));
+    if (live()) await Promise.all(corners.map(read));
+    await new Promise(res => setTimeout(res, NEIGHBOUR_REFRESH_MS));
+  }
 }
 
 async function enterPlot(pref) {
@@ -201,6 +233,7 @@ async function enterPlot(pref) {
       loading(null);
       await enterGame(s);
       app.ui.toast(`${P.name}の区画に入りました`, 'good');
+      watchNeighbours(pref);
       return;
     } catch (e) {
       if (!/did not answer/.test(errText(e))) { loading(null); alertTitle('入れませんでした: ' + errText(e)); return; }
@@ -215,6 +248,7 @@ async function enterPlot(pref) {
     await enterGame(h);
     app.ui.toast(`${P.name}の区画を開きました。同じ県の人が入ってこられます`, 'good');
     app.saveNow();
+    watchNeighbours(pref);
   } catch (e) {
     loading(null);
     alertTitle('区画を開けませんでした: ' + errText(e));
