@@ -16,6 +16,8 @@ const SVG = {
   rot: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12a8 8 0 1 1-3-6.2"/><path d="M20 4v5h-5"/></svg>',
   menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+  hammer: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 5l5 5-2 2-5-5z"/><path d="M12 7 4 15l3 3 8-8"/><path d="M15 4l2-1 4 4-1 2"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8"><path d="M5 12.5l4.5 4.5L19 7"/></svg>',
   people: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3 3-5 6-5s6 2 6 5"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.5c3 0 5.5 1.5 5.5 4.5"/></svg>',
 };
 
@@ -63,6 +65,7 @@ export class UI {
         <div id="buildbar" class="panel" hidden></div>
         <div id="dock">
           <div class="side panel">
+            <button class="btn dockbtn primary" data-a="sheet" data-s="build" aria-label="建設メニュー">${SVG.hammer}<span>建設</span></button>
             <button class="btn dockbtn" id="btn-remove" data-a="mode-remove" aria-label="撤去モード">${SVG.pick}<span>撤去</span></button>
           </div>
           <div id="quickbar" class="panel" aria-label="設置できる物"></div>
@@ -107,6 +110,26 @@ export class UI {
       case 'close': this.closeSheet(); break;
       case 'mode-remove': app.ctrl.setMode(app.ctrl.mode === 'remove' ? 'normal' : 'remove'); break;
       case 'mode-normal': app.ctrl.setMode('normal'); break;
+      case 'confirm': app.ctrl.confirm(); break;
+      case 'cancel-pending': app.ctrl.clearPending(); break;
+      case 'instant': app.ctrl.setInstant(!app.ctrl.instant); break;
+      case 'bgroup': this.buildGroup = d.g; this.refresh(true); app.audio.play('click'); break;
+      case 'build-pick': {
+        const item = d.item;
+        const have = invCount(this.me.inv, item);
+        if (have <= 0) {
+          const rec = this.g.handRecipeFor(item);
+          if (rec && this._canCraft(rec.name)) {
+            const n = ITEMS[item].stack >= 100 ? 5 : 1;
+            sub({ type: 'craft', recipe: rec.name, count: n });
+            this.toast(`${ITEMS[item].ja} を作っています。できたら置けます`);
+            app.audio.play('craft-start');
+          } else { this.toast(`${ITEMS[item].ja} の材料が足りません`, 'err'); app.audio.play('error'); break; }
+        }
+        app.ctrl.selectItem(item);
+        this.closeSheet();
+        break;
+      }
       case 'rotate-build': app.ctrl.rotate(); break;
       case 'quick': app.ctrl.selectItem(d.item); app.audio.play('click'); break;
       case 'tab': this.invTab = d.tab; this.pickRecipe = false; this.refresh(true); app.audio.play('click'); break;
@@ -153,17 +176,31 @@ export class UI {
     const c = this.app.ctrl;
     const bb = this.el('buildbar');
     this.el('btn-remove').classList.toggle('on', c.mode === 'remove');
-    if (c.mode === 'build' && c.buildItem) {
+    const pi = c.pendingInfo();
+    this._pendSig = JSON.stringify(pi);
+    if (pi) {
+      bb.hidden = false;
+      const g0 = c.pending.kind === 'build' && c.pending.ghosts.length === 1 ? c.pending.ghosts[0] : null;
+      const canRot = g0 && isRotatable(ENTITIES[g0.name]);
+      const label = pi.kind === 'remove' ? `${pi.n}個を撤去` : pi.n ? `${pi.n}個置く` : '置けません';
+      const sub = pi.kind === 'remove' ? (c.pending.line ? 'つながったベルトを選びました' : '囲んだ物を撤去します')
+        : pi.reason && pi.n < pi.total ? pi.reason : '予定図は指で動かせます';
+      bb.innerHTML = `<div style="min-width:0;max-width:38vw"><div class="name">${esc(label)}</div><div class="hint">${esc(sub)}</div></div>
+        ${canRot ? `<button class="btn icon" data-a="rotate-build" aria-label="回転">${SVG.rot}</button>` : ''}
+        <button class="btn icon" data-a="cancel-pending" aria-label="取り消す">${SVG.x}</button>
+        <button class="btn ${pi.kind === 'remove' ? 'danger' : 'go'} confirm" data-a="confirm" ${pi.n ? '' : 'disabled'} aria-label="${esc(label)}">${SVG.check}</button>`;
+    } else if (c.mode === 'build' && c.buildItem) {
       const it = ITEMS[c.buildItem];
       const P = ENTITIES[it.place];
       bb.hidden = false;
       bb.innerHTML = `${iconHTML('item:' + c.buildItem, 30)}<div style="min-width:0"><div class="name">${esc(it.ja)}</div>
-        <div class="hint">なぞって並べる・2本指で移動</div></div>
+        <div class="hint">${c.instant ? 'タップ・なぞるとすぐ置きます' : 'タップ・なぞって予定図を出す'}・2本指で移動</div></div>
+        <button class="btn small ${c.instant ? 'on' : ''}" data-a="instant" aria-pressed="${c.instant}">すぐ置く</button>
         ${isRotatable(P) ? `<button class="btn icon" data-a="rotate-build" aria-label="回転">${SVG.rot}</button>` : ''}
         <button class="btn icon" data-a="mode-normal" aria-label="やめる">${SVG.x}</button>`;
     } else if (c.mode === 'remove') {
       bb.hidden = false;
-      bb.innerHTML = `<div style="min-width:0"><div class="name">撤去モード</div><div class="hint">なぞった物を撤去して持ち物に戻します</div></div>
+      bb.innerHTML = `<div style="min-width:0"><div class="name">撤去モード</div><div class="hint">指で四角く囲んで選びます。ベルトはダブルタップでまとめて選べます</div></div>
         <button class="btn icon" data-a="mode-normal" aria-label="やめる">${SVG.x}</button>`;
     } else bb.hidden = true;
     this.lastQuick = '';
@@ -293,6 +330,7 @@ export class UI {
     if (!force && this.app.ctrl.pointers.size === 0 && document.activeElement && document.activeElement.id === 'chat-in') return;
     let head = '', body = '';
     if (this.sheet === 'inventory') [head, body] = this._sheetInventory();
+    else if (this.sheet === 'build') [head, body] = this._sheetBuild();
     else if (this.sheet === 'tech') [head, body] = this._sheetTech();
     else if (this.sheet === 'menu') [head, body] = this._sheetMenu();
     else if (this.sheet === 'entity') [head, body] = this._sheetEntity(this.selected);
@@ -351,6 +389,7 @@ export class UI {
       if (ic.dataset.k !== 'none') { ic.innerHTML = iconHTML('item:lab', 30); ic.dataset.k = 'none'; }
     }
     this._renderGoal();
+    if (this.app.ctrl.pending && JSON.stringify(this.app.ctrl.pendingInfo()) !== this._pendSig) this.onModeChange();
     const s = this.app.session;
     const st = s.status || {};
     const n = (s.players || []).length || [...g.players.values()].filter(p => p.online).length;
@@ -509,6 +548,31 @@ export class UI {
         b += `<h3>クリエイティブ（物を出す）</h3><div class="grid">${Object.keys(ITEMS).map(k => this._slot('item:' + k, 0, `data-a="give" data-item="${k}" aria-label="${esc(ITEMS[k].ja)}"`)).join('')}</div>`;
       }
     }
+    return [head, b];
+  }
+  _sheetBuild() {
+    const g = this.g, me = this.me;
+    const groups = [['logistics', '物流'], ['production', '生産'], ['power', '電力'], ['fluid', '液体']];
+    const groupOf = name => {
+      const k = ENTITIES[ITEMS[name].place].kind;
+      if (['pole', 'boiler', 'engine', 'offshore', 'solar', 'accumulator', 'lamp'].includes(k)) return 'power';
+      if (['pipe', 'pipe-to-ground', 'tank', 'pumpjack'].includes(k)) return 'fluid';
+      if (['belt', 'underground', 'splitter', 'inserter', 'chest'].includes(k)) return 'logistics';
+      return 'production';
+    };
+    this.buildGroup ||= 'logistics';
+    const head = `<h2>建設</h2><div class="tabs" style="margin-left:6px">${groups.map(([k, ja]) => `<button class="tab ${this.buildGroup === k ? 'on' : ''}" data-a="bgroup" data-g="${k}">${ja}</button>`).join('')}</div>`;
+    const list = Object.keys(ITEMS).filter(n => ITEMS[n].place && groupOf(n) === this.buildGroup && (g.recipeEnabled(n) || invCount(me.inv, n) > 0));
+    const tiles = list.map(n => {
+      const have = invCount(me.inv, n);
+      const rec = g.handRecipeFor(n);
+      const can = have > 0 || (rec && this._canCraft(rec.name));
+      return `<button class="btile ${can ? '' : 'dim'}" data-a="build-pick" data-item="${n}" aria-label="${esc(ITEMS[n].ja)}">
+        ${iconHTML('item:' + n, 44)}<span class="bn">${esc(ITEMS[n].ja)}</span>
+        <span class="bc">${have > 0 ? fmtN(have) : can ? '作る' : '材料不足'}</span></button>`;
+    }).join('');
+    const b = `<div class="bgrid">${tiles || '<div class="muted">まだありません。研究で増えます</div>'}</div>
+      <div class="muted" style="font-size:12px">持っていない物は、選ぶと手作業でクラフトを始めます。</div>`;
     return [head, b];
   }
   _canCraft(r) {

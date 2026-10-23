@@ -197,7 +197,7 @@ function frame(now) {
   const cur = app.mouseTile ? { cursorX: app.mouseTile[0] + 0.5, cursorY: app.mouseTile[1] + 0.5 } : { cursorX: cam.x, cursorY: cam.y };
   s.setPresence({ x: Math.round(cam.x * 10) / 10, y: Math.round(cam.y * 10) / 10, z: Math.round(cam.zoom), ...roundCur(cur), name: p.name, color: p.color });
   if (now - (app.lastAmb || 0) > 200) { app.lastAmb = now; audio.setAmbience(app.renderer.visibleCounts); audio.setDaylight(g.daylight() / 1000); }
-  if (s.mode !== 'client' && now - app.lastSave > 60000) { app.lastSave = now; app.saveNow(); }
+  if (s.mode !== 'client' && now - app.lastSave > 30000) { app.lastSave = now; app.saveNow(); }
 }
 function roundCur(c) { return { cursorX: Math.round(c.cursorX * 10) / 10, cursorY: Math.round(c.cursorY * 10) / 10 }; }
 
