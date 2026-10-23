@@ -41,8 +41,35 @@ export function coastDist(gx, gy) {
   return d;
 }
 
+// Each prefecture's climate: how snowy (0..1) and how southern (0..1, wide beaches, palms, turquoise sea).
+// Prefectures not listed are temperate (0, 0).
+const CLIMATE = {
+  1: [1, 0], 2: [0.85, 0], 5: [0.75, 0], 3: [0.6, 0], 6: [0.65, 0], 15: [0.6, 0], 16: [0.5, 0], 20: [0.5, 0],
+  17: [0.4, 0], 18: [0.35, 0], 7: [0.35, 0], 4: [0.25, 0], 21: [0.25, 0], 10: [0.2, 0],
+  47: [0, 1], 46: [0, 0.5], 45: [0, 0.4], 39: [0, 0.3], 43: [0, 0.15],
+};
+const CLIM_BLEND = 96; // tiles over which two plots' climates run into each other at their border
+const NO_CLIMATE = [0, 0];
+
+// [snow, warm] at a tile of the big world. Every plot within CLIM_BLEND tiles counts, more the closer it is,
+// so the climate changes smoothly across plot borders (and the open sea takes the climate of the land near it).
+export function climateAt(gx, gy) {
+  const c = Math.floor(gx / S), r = Math.floor(gy / S);
+  let wsum = 0, snow = 0, warm = 0;
+  for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+    const p = plotAtCell(c + dc, r + dr);
+    if (!p) continue;
+    const x0 = (c + dc) * S, y0 = (r + dr) * S;
+    const kx = 1 - Math.max(x0 - gx, 0, gx - (x0 + S - 1)) / CLIM_BLEND, ky = 1 - Math.max(y0 - gy, 0, gy - (y0 + S - 1)) / CLIM_BLEND;
+    if (kx <= 0 || ky <= 0) continue;
+    const w = kx * ky, cl = CLIMATE[p] || NO_CLIMATE;
+    wsum += w; snow += w * cl[0]; warm += w * cl[1];
+  }
+  return wsum ? [snow / wsum, warm / wsum] : NO_CLIMATE;
+}
+
 // where plot p sits, for generateWorld
 export function plotPlace(p) {
   const { c, r } = PLOT_AT.get(p);
-  return { gx: c * S, gy: r * S, coast: coastDist };
+  return { gx: c * S, gy: r * S, coast: coastDist, climate: climateAt };
 }

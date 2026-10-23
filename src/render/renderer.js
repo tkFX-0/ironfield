@@ -6,7 +6,8 @@ import { hash2 } from '../sim/util.js';
 import { inserterTiles, drillArea } from '../sim/machines.js';
 import { dims } from '../sim/game.js';
 import { landscape } from '../sim/worldgen.js';
-import { PLOT_AT, plotAtCell, coastDist } from '../plots.js';
+import { PLOT_AT, plotAtCell, coastDist, climateAt } from '../plots.js';
+import { T_SAND } from '../sim/worldgen.js';
 
 const T = 64;
 const HALF_PI = Math.PI / 2;
@@ -46,7 +47,7 @@ export class Renderer {
     const a = this.around = this._aroundOf(game);
     if (a) {
       for (let y = 0; y < game.H; y++) a.terrain.set(game.terrain.subarray(y * game.W, (y + 1) * game.W), (y + AROUND) * a.w + AROUND);
-      this.gl.uploadMap(a.terrain, a.w, a.h, -AROUND, -AROUND, game.W, game.H);
+      this.gl.uploadMap(a.terrain, a.w, a.h, -AROUND, -AROUND, game.W, game.H, a.clim);
     } else this.gl.uploadMap(game.terrain, game.W, game.H);
     this.stamp = new Uint32Array(game.nextId + 100000);
   }
@@ -58,8 +59,32 @@ export class Renderer {
     if (this._around && this._around.plot === g.plot) return this._around;
     const { c, r } = PLOT_AT.get(g.plot);
     const w = g.W + AROUND * 2, h = g.H + AROUND * 2;
-    const l = landscape(c * g.W - AROUND, r * g.H - AROUND, w, h, coastDist);
-    return (this._around = { plot: g.plot, w, h, terrain: l.terrain, decor: l.decor });
+    const gx0 = c * g.W - AROUND, gy0 = r * g.H - AROUND;
+    const l = landscape(gx0, gy0, w, h, coastDist, climateAt);
+    // snow and warmth of every tile, for the ground shader (0..255 each)
+    const clim = new Uint8Array(w * h * 2);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const [sn, wa] = climateAt(gx0 + x, gy0 + y), i = (y * w + x) * 2;
+      clim[i] = Math.round(sn * 255); clim[i + 1] = Math.round(wa * 255);
+    }
+    return (this._around = { plot: g.plot, w, h, terrain: l.terrain, decor: l.decor, clim });
+  }
+  // [snow, warm] at tile (x, y) of the game being drawn (this.sceneGame; a neighbour's own coordinates while
+  // drawing a neighbour). Temperate for a world that is not a plot of the big world.
+  _climate(x, y) {
+    const at = PLOT_AT.get(this.sceneGame && this.sceneGame.plot);
+    return at ? climateAt(at.c * this.sceneGame.W + x, at.r * this.sceneGame.H + y) : [0, 0];
+  }
+  // a stable random number for tile (x, y) of the game being drawn, the same whichever plot it is seen from
+  _tileHash(x, y, seed) {
+    const at = PLOT_AT.get(this.sceneGame && this.sceneGame.plot);
+    return at ? hash2(at.c * this.sceneGame.W + x, at.r * this.sceneGame.H + y, seed) : hash2(x, y, seed);
+  }
+  _terrainAt(x, y) {
+    const g = this.sceneGame;
+    if (x >= 0 && y >= 0 && x < g.W && y < g.H) return g.terrain[y * g.W + x];
+    const a = this.around;
+    return a ? a.terrain[(y + AROUND) * a.w + x + AROUND] : 0;
   }
 
   sprite(key) { return this.sprites.get(key); }
@@ -235,7 +260,7 @@ export class Renderer {
           this.draw(`ore:${RESOURCES[r].name}:${v}:${dens}`, x * T, y * T);
         } else if (!far && g.terrain[i] < 3) {
           const h = hash2(x, y, 11);
-          if (h < 0.09) {
+          if (h < 0.09 && this._climate(x, y)[0] < 0.55) { // no grass tufts on snow
             const k = Math.floor(hash2(x, y, 12) * 8);
             this.draw('decal:' + k, x * T + Math.floor(hash2(x, y, 13) * 32), y * T + Math.floor(hash2(x, y, 14) * 32));
           }
@@ -243,11 +268,21 @@ export class Renderer {
       }
     }
   }
+  // Trees and rocks follow the climate (plots.js climateAt): snow on them in the north, firs instead of
+  // leafy trees as it gets colder, palms in the south (always on a beach).
   _drawDecor(d, x, y, col = WHITE) {
+    const [snow, warm] = this._climate(x, y);
+    const h = snow || warm ? this._tileHash(x, y, 71) : 1;
+    const S = this.S, firs = S.SNOW_TREES, palms = S.PALMS, green = S.WARM_TREES;
     let key;
-    if (d <= 8) key = 'tree:' + (d - 1);
-    else if (d <= 10) key = 'deadtree:' + (d - 9);
-    else key = 'rock:' + (d - 11);
+    if (d <= 8) {
+      const i = d - 1;
+      if (palms && warm > 0 && (h < warm * 0.75 || this._terrainAt(x, y) === T_SAND)) key = 'palm:' + (i % palms);
+      else if (firs && h < snow * 1.1) key = 'tree-snow:' + (firs.includes(i) ? i : firs[i % firs.length]);
+      else if (green && h < warm * 1.3) key = 'tree:' + (green.includes(i) ? i : green[i % green.length]);
+      else key = 'tree:' + i;
+    } else if (d <= 10) key = (firs && h < snow * 1.2 ? 'deadtree-snow:' : 'deadtree:') + (d - 9);
+    else key = (firs && h < snow * 1.2 ? 'rock-snow:' : 'rock:') + (d - 11);
     this.draw(key, x * T, y * T, col);
   }
 

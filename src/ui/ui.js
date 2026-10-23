@@ -511,10 +511,18 @@ export class UI {
       const img = new ImageData(W, H);
       const pal = [[66, 82, 34], [96, 90, 46], [104, 80, 52], [168, 148, 104], [30, 64, 82], [16, 40, 62]];
       const resPal = RESOURCES.map(r => r && hexRGB(r.map));
+      const a = this.app.renderer.around, AR = a ? (a.w - W) >> 1 : 0; // snow and warmth per tile (renderer._aroundOf)
       for (let i = 0; i < W * H; i++) {
-        let col = pal[g.terrain[i]] || pal[0];
+        const t = g.terrain[i];
+        let col = pal[t] || pal[0];
         if (g.res[i]) col = resPal[g.res[i]];
         else if (g.decor[i] && g.decor[i] <= 10) col = [44, 60, 26];
+        if (a && !g.res[i]) {
+          const j = ((((i / W) | 0) + AR) * a.w + (i % W) + AR) * 2, sn = a.clim[j] / 255, wa = a.clim[j + 1] / 255;
+          const to = (c, k) => { col = [col[0] + (c[0] - col[0]) * k, col[1] + (c[1] - col[1]) * k, col[2] + (c[2] - col[2]) * k]; };
+          if (sn) to(t >= 4 ? [44, 62, 76] : [214, 222, 232], sn * (t >= 4 ? 0.5 : 0.75));
+          if (wa) to(t >= 4 ? [24, 112, 122] : t === 3 ? [222, 212, 176] : [60, 104, 40], wa * 0.7);
+        }
         const o = i * 4;
         img.data[o] = col[0]; img.data[o + 1] = col[1]; img.data[o + 2] = col[2]; img.data[o + 3] = 255;
       }

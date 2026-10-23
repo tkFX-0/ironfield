@@ -238,10 +238,37 @@ function layer(id, w, h, ox, oy, fn) {
 const DEFS = [], DEFMAP = new Map();
 function def(key, w, h, draw, opts = {}) { const d = { key, w: Math.ceil(w), h: Math.ceil(h), draw, opts }; DEFS.push(d); DEFMAP.set(key, d); }
 // entity sprite: paint(ctx, o) draws in footprint coordinates (0,0 = footprint top-left)
-function ent(key, fw, fh, pad, paint) {
+// snowy: the same sprite with snow settled on top (snowOn)
+function ent(key, fw, fh, pad, paint, snowy = false) {
   const p = { l: 0, t: 0, r: SHX + 10, b: SHY + 9, ...pad };
   const w = fw + p.l + p.r, h = fh + p.t + p.b;
-  def(key, w, h, (ctx) => { ctx.translate(p.l, p.t); paint(ctx, { shadow: true, pad: p, w, h }); }, { ax: p.l, ay: p.t });
+  const draw = (ctx) => { ctx.translate(p.l, p.t); paint(ctx, { shadow: true, pad: p, w, h }); };
+  def(key, w, h, snowy ? (ctx) => snowOn(ctx, w, h, key, draw) : draw, { ax: p.l, ay: p.t });
+}
+// Snow settles on whatever faces up: opaque pixels just below the sprite's top silhouette (or below any gap
+// of open air, like the shoulders of a fir's tiers) turn white, a little deeper in some columns than others.
+function snowOn(ctx, w, h, key, draw) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  draw(g);
+  const img = g.getImageData(0, 0, w, h), a = img.data, R = rng('snow' + key);
+  const ph = R() * 6;
+  for (let x = 0; x < w; x++) {
+    const depth = 5 + Math.sin(x * 0.42 + ph) * 1.8 + R() * 2.2;
+    let run = 0; // opaque pixels since the last open air above
+    for (let y = 0; y < h; y++) {
+      const i = (y * w + x) * 4;
+      if (a[i + 3] < 90) { run = 0; continue; } // open air (soft shadows count as air)
+      run++;
+      if (run > depth + 1.5 || a[i + 3] < 220) continue;
+      const k = run === 1 ? 0.55 : run > depth ? 0.5 : 0.95;
+      const tone = run === 1 ? [160, 172, 192] : [240 - run * 2.5, 244 - run * 1.8, 252];
+      for (let ch = 0; ch < 3; ch++) a[i + ch] += (tone[ch] - a[i + ch]) * k;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  ctx.drawImage(c, 0, 0);
 }
 // rotate a point given in north-layout footprint pixels (fw x fh) into the footprint for dir
 function rotPt(dir, fw, fh, x, y) {
@@ -264,6 +291,9 @@ const TREE_PAL = [
   ['#1f3a37', '#345c54', '#6c9688', 'c'],
 ];
 const TREE_PAD = { l: 50, t: 134, r: 88, b: 46 };
+export const SNOW_TREES = [2, 5, 7]; // the firs: in the snow every tree is drawn as one of these
+export const PALMS = 4;
+export const WARM_TREES = [0, 1, 4]; // the green leafy ones: in the south no firs or autumn colours
 function drawTree(ctx, i, o) {
   const R = rng('tree' + i), [cd, cm, cl, type] = TREE_PAL[i];
   const conifer = type === 'c', bx = 32, by = 56;
@@ -286,7 +316,7 @@ function drawTree(ctx, i, o) {
   if (!conifer) {
     for (const s of [-1, 1]) pline(ctx, [[bx + s * 2, top + 18], [bx + s * 14, top - 6], [bx + s * 20, top - 16]], '#4a3420', 3);
   }
-  if (conifer) drawConifer(ctx, R, bx, by, H, cw, cd, cm, cl);
+  if (conifer) drawConifer(ctx, R, bx, by, H, cw, cd, cm, cl, o.snow);
   else drawCanopy(ctx, R, bx, cy, H, cw, cd, cm, cl);
 }
 function drawCanopy(ctx, R, bx, cy, H, cw, cd, cm, cl) {
@@ -320,7 +350,7 @@ function drawCanopy(ctx, R, bx, cy, H, cw, cd, cm, cl) {
   fill(ctx, mass, lg(ctx, 0, cy - ry, 0, cy + ry * 1.3, 0, 'rgba(0,0,0,0)', 0.6, 'rgba(0,0,0,0.05)', 1, 'rgba(10,20,5,.45)'));
   ctx.restore();
 }
-function drawConifer(ctx, R, bx, by, H, cw, cd, cm, cl) {
+function drawConifer(ctx, R, bx, by, H, cw, cd, cm, cl, snow = false) {
   const tiers = 5;
   for (let t = 0; t < tiers; t++) {
     const f = t / tiers, tb = by - 16 - f * (H - 34) * 0.95, tt = tb - (H - 34) / tiers * 1.75;
@@ -343,10 +373,78 @@ function drawConifer(ctx, R, bx, by, H, cw, cd, cm, cl) {
       nd[t].moveTo(x, y); nd[t].lineTo(x + side * (3 + R() * 4), y + 3 + R() * 3);
     }
     [mix(cd, '#000000', 0.25), cm, mix(cl, '#fff8d8', 0.15)].forEach((c, i) => stroke(ctx, nd[i], css(c, 0.8), 1.5));
+    if (snow) {
+      // a layer of snow over the top of the tier, with a wavy lower edge
+      const sy = tt + (tb - tt) * (0.42 + R() * 0.08), pts2 = [[bx, tt - 2], [bx + hw * 0.62, tt + (tb - tt) * 0.6]];
+      for (let k = 1; k < 6; k++) { const u = 1 - (2 * k) / 6; pts2.push([bx + u * hw * 0.6, sy + (k % 2 ? 4 : -1) + R() * 3 - Math.abs(u) * 2]); }
+      pts2.push([bx - hw * 0.62, tt + (tb - tt) * 0.6]);
+      const sn = poly(pts2);
+      fill(ctx, sn, lg(ctx, bx - hw, tt, bx + hw, tb, 0, '#f6f9fd', 0.5, '#e2e9f3', 1, '#b4c2d6'));
+      stroke(ctx, sn, 'rgba(110,128,156,.55)', 1);
+    }
     fill(ctx, rrect(bx - hw, tb - 9, hw * 2, 14, 0), 'rgba(0,0,0,.22)');
     ctx.restore();
     pline(ctx, [[bx, tt + 2], [bx - hw * 0.5, tt + (tb - tt) * 0.55]], css(cl, 0.55), 1.3);
   }
+}
+// a coconut palm for the southern prefectures: a leaning ringed trunk under a crown of drooping fronds
+const PALM_PAD = { l: 70, t: 170, r: 100, b: 46 };
+function drawPalm(ctx, i, o) {
+  const R = rng('palm' + i), bx = 32, by = 56;
+  const H = 118 + R() * 34, lean = (i & 1 ? -1 : 1) * (8 + R() * 20);
+  const tx = bx + lean, ty = by - H;
+  const at = t => { const u = 1 - t; return [u * u * bx + 2 * u * t * (bx + lean * 0.1) + t * t * tx, u * u * by + 2 * u * t * (by - H * 0.55) + t * t * ty]; };
+  if (o.shadow) tallShadow(ctx, bx, by, [-60, -20, 300, 220], (g) => {
+    g.fillRect(-4, 0, 8, H * 0.95);
+    g.beginPath(); g.ellipse(lean * 0.4, H, 54, 24, 0, 0, TAU); g.fill();
+  }, 0.3, 5, 0.45, 0.24);
+  fill(ctx, ell(bx + 3, by + 1, 12, 4.5), 'rgba(0,0,0,.3)');
+  // fronds: [angle, length, droop]; the ones pointing away are drawn behind the trunk top
+  const fronds = [];
+  const nf = 8 + (i % 2);
+  for (let k = 0; k < nf; k++) fronds.push([(k / nf) * TAU + R() * 0.4, 42 + R() * 18, 14 + R() * 16]);
+  const frond = ([a, L, droop]) => {
+    const ex = tx + Math.cos(a) * L, ey = ty + Math.sin(a) * L * 0.42 + droop;
+    const cx = tx + Math.cos(a) * L * 0.5, cy = ty + Math.sin(a) * L * 0.2 - 12;
+    const q = t => { const u = 1 - t; return [u * u * tx + 2 * u * t * cx + t * t * ex, u * u * ty + 2 * u * t * cy + t * t * ey]; };
+    const left = [], right = [];
+    for (let k = 0; k <= 12; k++) {
+      const t = k / 12, [x, y] = q(t), [x2, y2] = q(Math.min(1, t + 0.02));
+      const dx = x2 - x, dy = y2 - y, l = Math.hypot(dx, dy) || 1, nx = -dy / l, ny = dx / l;
+      const wd = 8 * Math.sin(Math.PI * Math.min(1, t * 1.15)) + 1;
+      left.push([x + nx * wd, y + ny * wd]); right.unshift([x - nx * wd, y - ny * wd]);
+    }
+    const leaf = poly(left.concat(right));
+    const lit = 0.5 - Math.cos(a) * 0.25 - Math.sin(a) * 0.2;
+    stroke(ctx, leaf, OUT, 2.2);
+    fill(ctx, leaf, lg(ctx, tx, ty, ex, ey, 0, css(mix('#3f7a26', '#9fd055', lit)), 1, css(mix('#24461a', '#5f9a32', lit))));
+    // leaflets: the notched edge of a palm frond
+    const cuts = new Path2D(), ribs = new Path2D();
+    for (let k = 1; k < 12; k++) {
+      const [x, y] = q(k / 12), [lx, ly] = left[k], [rx, ry] = right[12 - k];
+      cuts.moveTo(x, y); cuts.lineTo(lx + (lx - x) * 0.2, ly + (ly - y) * 0.2);
+      cuts.moveTo(x, y); cuts.lineTo(rx + (rx - x) * 0.2, ry + (ry - y) * 0.2);
+    }
+    for (let k = 0; k <= 12; k++) { const [x, y] = q(k / 12); k ? ribs.lineTo(x, y) : ribs.moveTo(x, y); }
+    stroke(ctx, cuts, 'rgba(20,40,12,.55)', 1.1);
+    stroke(ctx, ribs, css(mix('#c8d88a', '#6f8a3a', 1 - lit), 0.85), 1.4);
+  };
+  for (const f of fronds) if (Math.sin(f[0]) < 0) frond(f);
+  // trunk: segments that narrow toward the top, each with a ring
+  ctx.lineCap = 'round';
+  const N = 14, pts = [];
+  for (let k = 0; k <= N; k++) pts.push(at(k / N));
+  for (let k = 0; k < N; k++) seg(ctx, pts[k][0], pts[k][1], pts[k + 1][0], pts[k + 1][1], OUT, 9.5 - k * 0.25 + 2.4);
+  for (let k = 0; k < N; k++) seg(ctx, pts[k][0], pts[k][1], pts[k + 1][0], pts[k + 1][1], k & 1 ? '#86663f' : '#7a5b37', 9.5 - k * 0.25);
+  for (let k = 0; k < N; k++) seg(ctx, pts[k][0] - 2, pts[k][1], pts[k + 1][0] - 2, pts[k + 1][1], 'rgba(230,205,160,.35)', 2);
+  for (let k = 1; k < N; k++) { const [x, y] = pts[k], w = (9.5 - k * 0.25) / 2; seg(ctx, x - w, y + 1, x + w, y - 1, 'rgba(40,26,14,.6)', 1.2); }
+  ctx.lineCap = 'butt';
+  // coconuts under the crown
+  for (const [dx, dy] of [[-5, 6], [4, 7], [0, 10]]) {
+    fill(ctx, circ(tx + dx, ty + dy, 4.6), OUT);
+    fill(ctx, circ(tx + dx, ty + dy, 3.8), rg(ctx, tx + dx - 1.5, ty + dy - 1.5, 0.5, tx + dx, ty + dy, 4, 0, '#8a6a3a', 1, '#3e2a14'));
+  }
+  for (const f of fronds) if (Math.sin(f[0]) >= 0) frond(f);
 }
 function drawDeadTree(ctx, i, o) {
   const R = rng('dead' + i), bx = 32, by = 56, segs = [];
@@ -469,6 +567,11 @@ function defTerrain() {
   for (let i = 0; i < 8; i++) ent('tree:' + i, 64, 64, TREE_PAD, (ctx, o) => drawTree(ctx, i, o));
   for (let i = 0; i < 2; i++) ent('deadtree:' + i, 64, 64, { l: 30, t: 100, r: 96, b: 50 }, (ctx, o) => drawDeadTree(ctx, i, o));
   for (let i = 0; i < 3; i++) ent('rock:' + i, 64, 64, ROCK_PAD, (ctx, o) => drawRock(ctx, i, o));
+  // the snowy north and the warm south (renderer._drawDecor picks these by the climate, plots.js climateAt)
+  for (const i of SNOW_TREES) ent('tree-snow:' + i, 64, 64, TREE_PAD, (ctx, o) => drawTree(ctx, i, { ...o, snow: true }), true);
+  for (let i = 0; i < 2; i++) ent('deadtree-snow:' + i, 64, 64, { l: 30, t: 100, r: 96, b: 50 }, (ctx, o) => drawDeadTree(ctx, i, o), true);
+  for (let i = 0; i < 3; i++) ent('rock-snow:' + i, 64, 64, ROCK_PAD, (ctx, o) => drawRock(ctx, i, o), true);
+  for (let i = 0; i < PALMS; i++) ent('palm:' + i, 64, 64, PALM_PAD, (ctx, o) => drawPalm(ctx, i, o));
   for (let i = 0; i < 8; i++) def('decal:' + i, 32, 32, (ctx) => drawDecal(ctx, i));
   for (const res of ['iron-ore', 'copper-ore', 'coal', 'stone'])
     for (let v = 0; v < 6; v++) for (let d = 0; d < 4; d++) def(`ore:${res}:${v}:${d}`, 64, 64, (ctx) => drawOre(ctx, res, v, d));

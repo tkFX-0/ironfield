@@ -49,6 +49,7 @@ vec3 mat(float c, vec2 w){
   return vec3(0.);
 }
 float code(vec2 t){ return texture(uMap,(floor(t)-uMapOrigin+.5)/uMapSize).r*255.; }
+vec2 clim(vec2 t){ return texture(uMap,(floor(t)-uMapOrigin+.5)/uMapSize).gb; } // snow, warmth (plots.js climateAt)
 void main(){
   vec2 w=vW;
   // jitter lookup position for wavy borders
@@ -57,18 +58,24 @@ void main(){
   float c=code(q);
   vec3 col;
   float cw=code(w);
+  vec2 cl=clim(w); float snow=cl.x, warm=cl.y;
   if(c>=3.5){
     // water: depth from the deep/shallow code and distance to land
     float deep=c>4.5?1.:0.;
     float t=uTime;
     float wave=fbm(w*.6+vec2(t*.05,t*.03))*.6+fbm(w*2.2-vec2(t*.08,0.))*.4;
     vec3 sh=vec3(.10,.24,.30), dp=vec3(.04,.12,.20);
+    sh=mix(sh,vec3(.10,.47,.50),warm); dp=mix(dp,vec3(.03,.21,.36),warm); // the southern sea: turquoise shallows
+    sh=mix(sh,vec3(.15,.25,.31),snow*.6); dp=mix(dp,vec3(.05,.11,.17),snow*.6); // the northern sea: grey and cold
     col=mix(sh,dp,deep*.8+.2*wave);
     col+=vec3(.05,.08,.09)*smoothstep(.62,.8,wave);
     // shore foam: land nearby
     float land=0.;
     for(int k=0;k<4;k++){ vec2 o2=vec2(k==0?1.:k==1?-1.:0., k==2?1.:k==3?-1.:0.)*.55; if(code(q+o2)<3.5) land=1.; }
     col=mix(col,vec3(.45,.52,.50),land*.25*(.5+.5*sin(t*1.3+w.x*2.+w.y)));
+    // sea ice in the shallows of the snowiest coasts
+    float ice=(1.-deep)*smoothstep(.5,.58,fbm(w*.45)*.7+fbm(w*2.4)*.3+(snow-.75)*.5+land*.12);
+    col=mix(col,vec3(.78,.86,.92)*(.9+.12*fbm(w*3.1)),ice*.92);
   } else {
     col=mat(c,w);
     // soft shore darkening next to water
@@ -78,6 +85,19 @@ void main(){
     // blend toward the neighbouring material
     float c2=code(w+(j.yx)*1.6);
     if(c2!=c && c2<3.5) col=mix(col,mat(c2,w),.35);
+    // the south: lusher grass, bright coral sand
+    if(warm>0.){
+      if(c<1.5) col=mix(col,col*vec3(.82,1.16,.78)+vec3(0.,.03,0.),warm*.7);
+      else if(c>2.5) col=mix(col,vec3(.88,.84,.70)*(.93+.1*fbm(w*4.3)),warm*.75);
+    }
+    // the north: snow lies in patches that join up as it gets colder (thinner on beaches)
+    if(snow>0.){
+      float patchy=fbm(w*.32)*.6+fbm(w*1.9)*.4;
+      float lim=1.-snow*(c>2.5?.85:1.2);
+      float cover=smoothstep(lim,lim+.1,patchy);
+      vec3 sc=vec3(.86,.9,.95)*(.9+.12*fbm(w*2.7))-vec3(.08,.06,.02)*fbm(w*.8+5.);
+      col=mix(col,sc,cover);
+    }
   }
   // subtle tile grid at close zoom (helps placement)
   vec2 fw=fract(w);
@@ -175,13 +195,16 @@ export class GL {
     this.atlasSize = size;
   }
 
-  // bytes: w x h tile codes whose top-left tile is (ox, oy); the playable map is (0,0)..(pw,ph)
-  uploadMap(bytes, w, h, ox = 0, oy = 0, pw = w, ph = h) {
+  // bytes: w x h tile codes whose top-left tile is (ox, oy); the playable map is (0,0)..(pw,ph).
+  // clim: 2 bytes per tile, snow and warmth (none: temperate everywhere).
+  uploadMap(bytes, w, h, ox = 0, oy = 0, pw = w, ph = h, clim = null) {
     const gl = this.gl;
     if (!this.mapTex) this.mapTex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.mapTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, bytes);
+    const px = new Uint8Array(w * h * 4);
+    for (let i = 0; i < w * h; i++) { px[i * 4] = bytes[i]; if (clim) { px[i * 4 + 1] = clim[i * 2]; px[i * 4 + 2] = clim[i * 2 + 1]; } }
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
