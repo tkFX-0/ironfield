@@ -11,10 +11,10 @@ import { TECHS, ITEMS } from './data.js';
 import { JintoriView } from './jintori/view.js';
 import { LocalJintori } from './jintori/store.js';
 import { PREFS } from './jintori/japan.js';
-import { PLOT_AT, PLOT_COLS, PLOT_ROWS, plotSeed } from './plots.js';
+import { PLOT_AT, PLOT_COLS, PLOT_ROWS, plotSeed, plotPlace } from './plots.js';
 
 const COLORS = ['#f0a64a', '#e8574a', '#5ea2d8', '#73b65b', '#c77ddb', '#e3d34f', '#4fd1c5', '#f2f2f2'];
-const plotSaveId = p => 'plot-' + p; // this device's copy of a prefecture plot
+const plotSaveId = p => 'plot2-' + p; // this device's copy of a prefecture plot (2: land runs on across plot borders)
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const store = {
   get(k, d) { try { const v = localStorage.getItem('ironfield.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
@@ -184,7 +184,7 @@ async function newestPlot(pref, remote, lastHost) {
   for (const c of copies) {
     try { return { game: await Game.load(c.bytes), epoch }; } catch (e) { console.warn('[plot] unusable world copy', e); }
   }
-  return { game: Game.create({ seed: plotSeed(pref), name: `${PREFS[pref].name}の区画` }), epoch };
+  return { game: Game.create({ seed: plotSeed(pref), name: `${PREFS[pref].name}の区画`, plot: pref, at: plotPlace(pref) }), epoch };
 }
 
 async function enterPlot(pref) {

@@ -25,7 +25,7 @@ out vec2 vW;
 void main(){ vW=uView.xy+vec2((aPos.x+1.)*.5,(1.-aPos.y)*.5)*uView.zw; gl_Position=vec4(aPos,0.,1.); }`;
 const TERRAIN_FS = `#version 300 es
 precision highp float;
-uniform sampler2D uMap; uniform vec2 uMapSize; uniform float uTime; uniform float uPx;
+uniform sampler2D uMap; uniform vec2 uMapSize; uniform vec2 uMapOrigin; uniform vec2 uPlot; uniform float uTime; uniform float uPx;
 in vec2 vW; out vec4 o;
 float h(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
 float n(vec2 p){ vec2 i=floor(p),f=fract(p); f=f*f*(3.-2.*f);
@@ -48,7 +48,7 @@ vec3 mat(float c, vec2 w){
   }
   return vec3(0.);
 }
-float code(vec2 t){ return texture(uMap,(floor(t)+.5)/uMapSize).r*255.; }
+float code(vec2 t){ return texture(uMap,(floor(t)-uMapOrigin+.5)/uMapSize).r*255.; }
 void main(){
   vec2 w=vW;
   // jitter lookup position for wavy borders
@@ -83,8 +83,13 @@ void main(){
   vec2 fw=fract(w);
   float gl=step(fw.x,1./uPx)+step(fw.y,1./uPx);
   col*= 1.-min(gl,1.)*.06*smoothstep(24.,60.,uPx);
+  // the neighbouring plots around yours: dimmed, with a line along your plot's border
+  float e=max(max(-w.x,w.x-uPlot.x),max(-w.y,w.y-uPlot.y));
+  if(e>0.) col=mix(col,vec3(dot(col,vec3(.3,.5,.2))),.35)*.62;
+  col=mix(col,vec3(1.,.8,.45),.75*(1.-smoothstep(.0,max(.07,2.5/uPx),abs(e))));
   // outside the map
-  if(w.x<0.||w.y<0.||w.x>=uMapSize.x||w.y>=uMapSize.y) col=vec3(.03,.08,.13);
+  vec2 m=w-uMapOrigin;
+  if(m.x<0.||m.y<0.||m.x>=uMapSize.x||m.y>=uMapSize.y) col=vec3(.03,.08,.13);
   o=vec4(col,1.);
 }`;
 
@@ -119,7 +124,8 @@ export class GL {
     this.uTex = gl.getUniformLocation(this.sp, 'uTex');
     this.tu = {
       view: gl.getUniformLocation(this.tp, 'uView'), map: gl.getUniformLocation(this.tp, 'uMap'),
-      size: gl.getUniformLocation(this.tp, 'uMapSize'), time: gl.getUniformLocation(this.tp, 'uTime'), px: gl.getUniformLocation(this.tp, 'uPx'),
+      size: gl.getUniformLocation(this.tp, 'uMapSize'), origin: gl.getUniformLocation(this.tp, 'uMapOrigin'),
+      plot: gl.getUniformLocation(this.tp, 'uPlot'), time: gl.getUniformLocation(this.tp, 'uTime'), px: gl.getUniformLocation(this.tp, 'uPx'),
     };
     this.buf = new ArrayBuffer(MAXQ * 4 * FLOATS * 4);
     this.f32 = new Float32Array(this.buf);
@@ -169,7 +175,8 @@ export class GL {
     this.atlasSize = size;
   }
 
-  uploadMap(bytes, w, h) {
+  // bytes: w x h tile codes whose top-left tile is (ox, oy); the playable map is (0,0)..(pw,ph)
+  uploadMap(bytes, w, h, ox = 0, oy = 0, pw = w, ph = h) {
     const gl = this.gl;
     if (!this.mapTex) this.mapTex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.mapTex);
@@ -179,7 +186,7 @@ export class GL {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    this.mapW = w; this.mapH = h;
+    this.mapW = w; this.mapH = h; this.mapOX = ox; this.mapOY = oy; this.plotW = pw; this.plotH = ph;
   }
 
   resize(w, h) {
@@ -196,6 +203,8 @@ export class GL {
     gl.uniform1i(this.tu.map, 1);
     gl.uniform4f(this.tu.view, x0, y0, wTiles, hTiles);
     gl.uniform2f(this.tu.size, this.mapW, this.mapH);
+    gl.uniform2f(this.tu.origin, this.mapOX, this.mapOY);
+    gl.uniform2f(this.tu.plot, this.plotW, this.plotH);
     gl.uniform1f(this.tu.time, time);
     gl.uniform1f(this.tu.px, pxPerTile);
     gl.bindVertexArray(this.tvao);

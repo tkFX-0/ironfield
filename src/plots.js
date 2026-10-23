@@ -2,6 +2,8 @@
 // Every plot is the same size and they sit on a tile map shaped like Japan (north-east at the top right).
 // Each plot runs on its own as an open room (net/session.js plotRoom), so plots never share buildings.
 
+import { MAP_W } from './data.js';
+
 // [prefecture 1..47, column, row]
 const LAYOUT = [
   [1, 13, 0],
@@ -19,5 +21,28 @@ const LAYOUT = [
 export const PLOT_COLS = 14, PLOT_ROWS = 11;
 export const PLOT_AT = new Map(LAYOUT.map(([p, c, r]) => [p, { c, r }]));
 
-// the plot's own seed, so every prefecture gets a different landscape
+// the plot's own seed: where its ores and oil lie
 export const plotSeed = p => (20261023 + p * 7919) | 0;
+
+// Plots are MAP_W tiles square and touch each other, so a tile of the big world is (column * MAP_W + x, row * MAP_W + y).
+const S = MAP_W;
+const AT = new Map(LAYOUT.map(([p, c, r]) => [r * PLOT_COLS + c, p]));
+export const plotAtCell = (c, r) => (c >= 0 && r >= 0 && c < PLOT_COLS && r < PLOT_ROWS ? AT.get(r * PLOT_COLS + c) || 0 : 0);
+
+// distance from a tile of the big world to the nearest open sea (a cell with no plot)
+export function coastDist(gx, gy) {
+  const c = Math.floor(gx / S), r = Math.floor(gy / S);
+  let d = Infinity;
+  for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+    if (plotAtCell(c + dc, r + dr)) continue;
+    const x0 = (c + dc) * S, y0 = (r + dr) * S;
+    d = Math.min(d, Math.hypot(Math.max(x0 - gx, 0, gx - (x0 + S - 1)), Math.max(y0 - gy, 0, gy - (y0 + S - 1))));
+  }
+  return d;
+}
+
+// where plot p sits, for generateWorld
+export function plotPlace(p) {
+  const { c, r } = PLOT_AT.get(p);
+  return { gx: c * S, gy: r * S, coast: coastDist };
+}

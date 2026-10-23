@@ -6,6 +6,7 @@ import { isFuel, smeltRecipe, drillArea } from '../sim/machines.js';
 import { isRotatable } from '../sim/game.js';
 import { plotOfRoom } from '../net/session.js';
 import { PREFS } from '../jintori/japan.js';
+import { PLOT_AT, plotAtCell } from '../plots.js';
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtN = n => (n >= 10000 ? (n / 1000).toFixed(n >= 100000 ? 0 : 1) + 'k' : String(n));
@@ -448,6 +449,18 @@ export class UI {
       const [sx, sy] = r.worldToScreen(c.x, c.y);
       if (sx < -50 || sy < -50 || sx > r.gl.canvas.width + 50 || sy > r.gl.canvas.height + 50) continue;
       html += `<div class="plabel" style="left:${sx / dpr}px;top:${sy / dpr}px;color:${/^#[0-9a-f]{6}$/i.test(c.color) ? c.color : '#fff'}">${esc(c.name || '')}</div>`;
+    }
+    // the names of the neighbouring plots, just over the border, level with the camera
+    const g = this.g, at = PLOT_AT.get(g.plot);
+    if (at) {
+      const cam = r.cam, cx = Math.max(6, Math.min(g.W - 6, cam.x)), cy = Math.max(6, Math.min(g.H - 6, cam.y));
+      for (const [dc, dr, wx, wy] of [[1, 0, g.W + 5, cy], [-1, 0, -5, cy], [0, -1, cx, -3], [0, 1, cx, g.H + 6]]) {
+        const P = PREFS[plotAtCell(at.c + dc, at.r + dr)];
+        if (!P) continue;
+        const [sx, sy] = r.worldToScreen(wx, wy);
+        if (sx < 0 || sy < 0 || sx > r.gl.canvas.width || sy > r.gl.canvas.height) continue;
+        html += `<div class="plabel nb" style="left:${sx / dpr}px;top:${sy / dpr}px;color:${P.color}">${esc(P.name)}の区画</div>`;
+      }
     }
     if (html !== this._lastLabels) { box.innerHTML = html; this._lastLabels = html; }
   }

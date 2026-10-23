@@ -43,10 +43,11 @@ export class Game {
   }
 
   // ---------------------------------------------------------------- creation / loading
-  static create({ seed = (Math.random() * 2 ** 31) | 0, name = 'Ironfield', sandbox = false } = {}) {
+  // plot: the prefecture (1..47) whose plot of the big world this is, placed by `at` (see generateWorld)
+  static create({ seed = (Math.random() * 2 ** 31) | 0, name = 'Ironfield', sandbox = false, plot = 0, at } = {}) {
     const g = new Game();
-    const w = generateWorld(seed);
-    g.seed = seed; g.name = name; g.sandbox = !!sandbox;
+    const w = generateWorld(seed, at);
+    g.seed = seed; g.name = name; g.sandbox = !!sandbox; g.plot = plot;
     g.tick = 0; g.nextId = 1; g.rockets = 0;
     g.W = MAP_W; g.H = MAP_H;
     g.terrain = w.terrain; g.res = w.res; g.amt = w.amt; g.decor = w.decor;
@@ -69,7 +70,7 @@ export class Game {
     flushFluids(this);
     const ents = [...this.ents.values()];
     const obj = {
-      v: 1, seed: this.seed, name: this.name, sandbox: this.sandbox, tick: this.tick, nextId: this.nextId,
+      v: 1, seed: this.seed, name: this.name, sandbox: this.sandbox, plot: this.plot, tick: this.tick, nextId: this.nextId,
       rockets: this.rockets, spawn: this.spawn, research: this.research, bonus: this.bonus, prod: this.prod,
       players: [...this.players.values()],
       ents,
@@ -84,7 +85,7 @@ export class Game {
     const raw = await decompress(bytes);
     const o = JSON.parse(new TextDecoder().decode(raw));
     const g = new Game();
-    g.seed = o.seed; g.name = o.name; g.sandbox = !!o.sandbox; g.tick = o.tick; g.nextId = o.nextId;
+    g.seed = o.seed; g.name = o.name; g.sandbox = !!o.sandbox; g.plot = o.plot | 0; g.tick = o.tick; g.nextId = o.nextId;
     g.rockets = o.rockets || 0; g.spawn = o.spawn; g.research = o.research; g.bonus = o.bonus; g.prod = o.prod || {};
     g.W = MAP_W; g.H = MAP_H;
     g.terrain = b64ToBytes(o.terrain); g.res = b64ToBytes(o.res); g.decor = b64ToBytes(o.decor);

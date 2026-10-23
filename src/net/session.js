@@ -14,9 +14,10 @@ const PREFIX = 'ironfield/v1/';
 // nobody is inside. Each of the 47 prefecture plots of the big world is one open room.
 export const OPEN_ROOM = 'PLAZA2'; // the old single shared world, no longer offered on the title screen
 export const OPEN_BROKER = 0;
-export const plotRoom = (p) => 'KENZ' + ROOM_ALPHABET[p >> 5] + ROOM_ALPHABET[p & 31]; // p = 1..47
+// KENY: the second version of the plots (land runs on across plot borders); KENZ rooms were the first
+export const plotRoom = (p) => 'KENY' + ROOM_ALPHABET[p >> 5] + ROOM_ALPHABET[p & 31]; // p = 1..47
 export const plotOfRoom = (r) => {
-  const m = /^KENZ([A-HJ-NP-Z2-9])([A-HJ-NP-Z2-9])$/.exec(r || '');
+  const m = /^KENY([A-HJ-NP-Z2-9])([A-HJ-NP-Z2-9])$/.exec(r || '');
   const p = m ? ROOM_ALPHABET.indexOf(m[1]) * 32 + ROOM_ALPHABET.indexOf(m[2]) : 0;
   return p >= 1 && p <= 47 ? p : 0;
 };

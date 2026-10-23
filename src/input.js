@@ -147,8 +147,9 @@ export class Controller {
   }
   _clampCam() {
     const g = this.game, cam = this.cam;
-    cam.x = Math.max(0, Math.min(g.W, cam.x));
-    cam.y = Math.max(0, Math.min(g.H, cam.y));
+    // a little past the edge, to look over the border at the neighbouring plot
+    cam.x = Math.max(-16, Math.min(g.W + 16, cam.x));
+    cam.y = Math.max(-16, Math.min(g.H + 16, cam.y));
   }
 
   // --------------------------------------------------------------- ghosts

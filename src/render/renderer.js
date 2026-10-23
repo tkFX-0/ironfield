@@ -5,6 +5,8 @@ import { ENTITIES, DX, DY, RESOURCES } from '../data.js';
 import { hash2 } from '../sim/util.js';
 import { inserterTiles, drillArea } from '../sim/machines.js';
 import { dims } from '../sim/game.js';
+import { landscape } from '../sim/worldgen.js';
+import { PLOT_AT, coastDist } from '../plots.js';
 
 const T = 64;
 const HALF_PI = Math.PI / 2;
@@ -13,6 +15,8 @@ const rgba = GL.rgba;
 const TIER = { 'transport-belt': 0, 'fast-transport-belt': 1, 'express-transport-belt': 2, 'underground-belt': 0, 'fast-underground-belt': 1,
   'express-underground-belt': 2, splitter: 0, 'fast-splitter': 1, 'express-splitter': 2 };
 const BELT_TPS = [1.875, 3.75, 5.625]; // tiles per second
+const AROUND = 64; // tiles of the neighbouring plots shown around a plot of the big world
+const DIM = rgba(0.58, 0.6, 0.64, 1);
 
 export class Renderer {
   constructor(canvas, spritesModule) {
@@ -39,8 +43,23 @@ export class Renderer {
 
   setMap(game) {
     this.game = game;
-    this.gl.uploadMap(game.terrain, game.W, game.H);
+    const a = this.around = this._aroundOf(game);
+    if (a) {
+      for (let y = 0; y < game.H; y++) a.terrain.set(game.terrain.subarray(y * game.W, (y + 1) * game.W), (y + AROUND) * a.w + AROUND);
+      this.gl.uploadMap(a.terrain, a.w, a.h, -AROUND, -AROUND, game.W, game.H);
+    } else this.gl.uploadMap(game.terrain, game.W, game.H);
     this.stamp = new Uint32Array(game.nextId + 100000);
+  }
+
+  // The land around a plot of the big world (the neighbours' landscape as it was generated; their buildings
+  // are not shown yet). Kept per plot: only the middle, your own plot, changes between games.
+  _aroundOf(g) {
+    if (!g.plot || !PLOT_AT.has(g.plot)) return null;
+    if (this._around && this._around.plot === g.plot) return this._around;
+    const { c, r } = PLOT_AT.get(g.plot);
+    const w = g.W + AROUND * 2, h = g.H + AROUND * 2;
+    const l = landscape(c * g.W - AROUND, r * g.H - AROUND, w, h, coastDist);
+    return (this._around = { plot: g.plot, w, h, terrain: l.terrain, decor: l.decor });
   }
 
   sprite(key) { return this.sprites.get(key); }
@@ -118,18 +137,22 @@ export class Renderer {
       if (k === 'belt') continue;
       sorted.push({ y: e.y + e._h, x: e.x, e });
     }
-    for (let y = ty0; y <= Math.min(g.H - 1, ty1 + 2); y++) {
-      const row = y * W;
-      for (let x = tx0; x <= tx1; x++) {
-        const d = g.decor[row + x];
-        if (d) sorted.push({ y: y + 1, x, d, tx: x, ty: y });
+    // trees and rocks, also on the neighbouring plots around yours
+    const a = this.around, m = a ? AROUND : 0;
+    const ex0 = Math.max(-m, Math.floor(x0) - 2), ex1 = Math.min(W - 1 + m, Math.ceil(x0 + wT) + 2);
+    const ey0 = Math.max(-m, Math.floor(y0) - 2), ey1 = Math.min(g.H - 1 + m, Math.ceil(y0 + hT) + 6);
+    for (let y = ey0; y <= ey1; y++) {
+      for (let x = ex0; x <= ex1; x++) {
+        const inside = x >= 0 && y >= 0 && x < W && y < g.H;
+        const d = inside ? g.decor[y * W + x] : a.decor[(y + m) * a.w + x + m];
+        if (d) sorted.push({ y: y + 1, x, d, tx: x, ty: y, out: !inside });
       }
     }
     sorted.sort((a, b) => a.y - b.y || a.x - b.x);
     const night = 1 - g.daylight() / 1000;
     const lights = [];
     for (const it of sorted) {
-      if (it.d) { this._drawDecor(it.d, it.tx, it.ty); continue; }
+      if (it.d) { this._drawDecor(it.d, it.tx, it.ty, it.out ? DIM : WHITE); continue; }
       this._drawEntity(it.e, tick, lights, counts);
     }
     // inserter arms on top
@@ -177,12 +200,12 @@ export class Renderer {
       }
     }
   }
-  _drawDecor(d, x, y) {
+  _drawDecor(d, x, y, col = WHITE) {
     let key;
     if (d <= 8) key = 'tree:' + (d - 1);
     else if (d <= 10) key = 'deadtree:' + (d - 9);
     else key = 'rock:' + (d - 11);
-    this.draw(key, x * T, y * T);
+    this.draw(key, x * T, y * T, col);
   }
 
   // ------------------------------------------------------------------ belts
