@@ -113,6 +113,7 @@ export class UI {
       case 'confirm': app.ctrl.confirm(); break;
       case 'cancel-pending': app.ctrl.clearPending(); break;
       case 'instant': app.ctrl.setInstant(!app.ctrl.instant); break;
+      case 'touchlike': app.ctrl.setTouchLike(!app.ctrl.touchLike); this.refresh(true); break;
       case 'bgroup': this.buildGroup = d.g; this.refresh(true); app.audio.play('click'); break;
       case 'build-pick': {
         const item = d.item;
@@ -178,13 +179,15 @@ export class UI {
     this.el('btn-remove').classList.toggle('on', c.mode === 'remove');
     const pi = c.pendingInfo();
     this._pendSig = JSON.stringify(pi);
+    const mouse = c.lastPointer === 'mouse'; // hints follow whatever the player is using now
+    const asMouse = mouse && !c.touchLike;
     if (pi) {
       bb.hidden = false;
       const g0 = c.pending.kind === 'build' && c.pending.ghosts.length === 1 ? c.pending.ghosts[0] : null;
       const canRot = g0 && isRotatable(ENTITIES[g0.name]);
       const label = pi.kind === 'remove' ? `${pi.n}個を撤去` : pi.n ? `${pi.n}個置く` : '置けません';
       const sub = pi.kind === 'remove' ? (c.pending.line ? 'つながったベルトを選びました' : '囲んだ物を撤去します')
-        : pi.reason && pi.n < pi.total ? pi.reason : '予定図は指で動かせます';
+        : pi.reason && pi.n < pi.total ? pi.reason : mouse ? '予定図はドラッグで動かせます・Enter で確定' : '予定図は指で動かせます';
       bb.innerHTML = `<div style="min-width:0;max-width:38vw"><div class="name">${esc(label)}</div><div class="hint">${esc(sub)}</div></div>
         ${canRot ? `<button class="btn icon" data-a="rotate-build" aria-label="回転">${SVG.rot}</button>` : ''}
         <button class="btn icon" data-a="cancel-pending" aria-label="取り消す">${SVG.x}</button>
@@ -194,13 +197,17 @@ export class UI {
       const P = ENTITIES[it.place];
       bb.hidden = false;
       bb.innerHTML = `${iconHTML('item:' + c.buildItem, 30)}<div style="min-width:0"><div class="name">${esc(it.ja)}</div>
-        <div class="hint">${c.instant ? 'タップ・なぞるとすぐ置きます' : 'タップ・なぞって予定図を出す'}・2本指で移動</div></div>
-        <button class="btn small ${c.instant ? 'on' : ''}" data-a="instant" aria-pressed="${c.instant}">すぐ置く</button>
+        <div class="hint">${asMouse ? 'クリック・ドラッグですぐ置きます・右クリックで撤去'
+          : mouse ? `${c.instant ? 'クリック・ドラッグですぐ置きます' : 'クリック・ドラッグで予定図を出す'}・右ドラッグで移動`
+          : `${c.instant ? 'タップ・なぞるとすぐ置きます' : 'タップ・なぞって予定図を出す'}・2本指で移動`}</div></div>
+        ${asMouse ? '' : `<button class="btn small ${c.instant ? 'on' : ''}" data-a="instant" aria-pressed="${c.instant}">すぐ置く</button>`}
         ${isRotatable(P) ? `<button class="btn icon" data-a="rotate-build" aria-label="回転">${SVG.rot}</button>` : ''}
         <button class="btn icon" data-a="mode-normal" aria-label="やめる">${SVG.x}</button>`;
     } else if (c.mode === 'remove') {
       bb.hidden = false;
-      bb.innerHTML = `<div style="min-width:0"><div class="name">撤去モード</div><div class="hint">指で四角く囲んで選びます。ベルトはダブルタップでまとめて選べます</div></div>
+      bb.innerHTML = `<div style="min-width:0"><div class="name">撤去モード</div><div class="hint">${asMouse ? 'クリック・ドラッグで囲んだ物をすぐ撤去します。ベルトはダブルクリックでまとめて選べます'
+          : mouse ? 'ドラッグで四角く囲んで選びます。ベルトはダブルクリックでまとめて選べます'
+          : '指で四角く囲んで選びます。ベルトはダブルタップでまとめて選べます'}</div></div>
         <button class="btn icon" data-a="mode-normal" aria-label="やめる">${SVG.x}</button>`;
     } else bb.hidden = true;
     this.lastQuick = '';
@@ -642,7 +649,10 @@ export class UI {
       <button class="btn" data-a="home">スタート地点へ</button>
       ${s.mode !== 'client' ? '<button class="btn" data-a="save">今すぐ保存</button>' : ''}
       <button class="btn danger" data-a="quit">タイトルへ</button></div>
-      <div class="muted" style="font-size:12px">操作: 1本指で移動、2本指で拡大縮小。建物は長押しで回転・撤去。パソコンでは WASD で移動、R で回転、Q で持ち替え、E で持ち物。</div></div>`;
+      ${matchMedia('(any-pointer: fine)').matches ? `<div class="row"><button class="btn ${this.app.ctrl.touchLike ? 'on' : ''}" data-a="touchlike" aria-pressed="${this.app.ctrl.touchLike}">マウスでもスマホと同じ操作</button></div>` : ''}
+      <div class="muted" style="font-size:12px">スマホ: 1本指で移動、2本指で拡大縮小。建物は長押しで回転・撤去。<br>
+      パソコン: ホイールで拡大縮小、中ボタンのドラッグか WASD で移動、長押しでメニュー。R で回転、Q で持ち替え、E で持ち物、X で撤去モード、Enter で確定、Esc で取り消し。<br>
+      「スマホと同じ操作」をオンにすると、クリックは指のタップと同じになります（予定図 → ✓、囲んで確認してから撤去、右ドラッグで移動）。</div></div>`;
     return [head, b];
   }
 

@@ -24,6 +24,9 @@ export class Controller {
     this.pending = null; // {kind:'build', ghosts} | {kind:'remove', ents}
     this.lastTap = { t: 0, x: -1, y: -1 };
     try { this.instant = localStorage.getItem('ironfield.instant') === '1'; } catch { this.instant = false; }
+    // touchLike: the mouse behaves like a finger (preview → ✓, drag the preview, confirm removals, right-drag pans)
+    try { this.touchLike = localStorage.getItem('ironfield.touchlike') === '1'; } catch { this.touchLike = false; }
+    this.lastPointer = matchMedia('(pointer: fine)').matches ? 'mouse' : 'touch'; // drives the on-screen hints
     this._bind();
   }
 
@@ -57,6 +60,14 @@ export class Controller {
     try { localStorage.setItem('ironfield.instant', on ? '1' : '0'); } catch { /* private mode */ }
     this.app.ui.onModeChange();
   }
+  setTouchLike(on) {
+    this.touchLike = !!on;
+    try { localStorage.setItem('ironfield.touchlike', on ? '1' : '0'); } catch { /* private mode */ }
+    this.hover = null;
+    this.setMode(this.mode === 'remove' ? 'remove' : 'normal');
+  }
+  // the mouse acts as a mouse (instant build, right-click removes) unless touchLike is on
+  _isMouse(type) { return type === 'mouse' && !this.touchLike; }
   rotate(ccw = false) {
     if (this.mode === 'build') {
       this.buildDir = (this.buildDir + (ccw ? 3 : 1)) % 4;
@@ -339,6 +350,7 @@ export class Controller {
     this.pointers.set(ev.pointerId, { sx, sy, x0: sx, y0: sy, t0: performance.now(), type: ev.pointerType, button: ev.button });
     this.vel = [0, 0];
     this.app.ui.hideQuickMenu();
+    if (this.lastPointer !== ev.pointerType) { this.lastPointer = ev.pointerType; this.app.ui.onModeChange(); }
     if (this.pointers.size === 2) {
       clearTimeout(this.longTimer);
       // a second finger means pan/zoom: undo whatever the first finger started
@@ -353,9 +365,10 @@ export class Controller {
     }
     if (this.pointers.size > 2) return;
     const [tx, ty] = this._tile(sx, sy);
-    const mouse = ev.pointerType === 'mouse';
+    const mouse = this._isMouse(ev.pointerType);
     if (mouse && ev.button === 2) { this.drag = { kind: 'remove', sx: tx, sy: ty, quick: true }; this._removeRect(tx, ty, tx, ty); return; }
-    if (mouse && ev.button === 1) { this.drag = { kind: 'pan', moved: true }; return; }
+    // middle drag pans; in touchLike mode right drag pans too (the two-finger drag of a phone)
+    if (ev.pointerType === 'mouse' && (ev.button === 1 || ev.button === 2)) { this.drag = { kind: 'pan', moved: true }; return; }
     if (this.mode === 'build') {
       if (!mouse && this._insidePending(tx, ty)) { this.drag = { kind: 'move', ox: tx - this.pending.ghosts[0].x, oy: ty - this.pending.ghosts[0].y }; return; }
       this.drag = { kind: 'build', sx: tx, sy: ty };
@@ -368,7 +381,7 @@ export class Controller {
     } else {
       this.drag = { kind: 'pan', moved: false, tx, ty };
       const e = this.game.entAt(tx, ty);
-      if (e && !mouse) {
+      if (e) { // long press (finger or held mouse button) opens the quick menu
         this.longTimer = setTimeout(() => {
           if (this.drag && this.drag.kind === 'pan' && !this.drag.moved) {
             this.drag = { kind: 'none' };
@@ -383,9 +396,9 @@ export class Controller {
   _move(ev) {
     const [sx, sy] = this._local(ev);
     if (ev.pointerType === 'mouse' && !this.pointers.size) {
-      this.hover = this._tile(sx, sy);
+      this.app.mouseTile = this._tile(sx, sy);
+      this.hover = this.touchLike ? null : this.app.mouseTile; // a finger has no hover preview
       if (this.mode === 'build') this._updateHoverGhost();
-      this.app.mouseTile = this.hover;
       return;
     }
     const p = this.pointers.get(ev.pointerId);
@@ -456,12 +469,12 @@ export class Controller {
     this.drag = null;
     const [sx, sy] = this._local(ev);
     const [tx, ty] = this._tile(sx, sy);
-    const quick = p.type === 'mouse' || this.instant;
+    const quick = this._isMouse(p.type) || this.instant;
     if (d.kind === 'build') {
       const ghosts = this.app.renderer.overlay.ghosts;
       if (quick) {
         this._placeGhosts(ghosts);
-        if (p.type === 'mouse') this.hover = [tx, ty];
+        if (this._isMouse(p.type)) this.hover = [tx, ty];
         this._updateHoverGhost();
       } else if (ghosts.length) this._setPending(ghosts);
       return;
@@ -575,7 +588,7 @@ export class Controller {
     if (k === 'r') this.rotate(e.shiftKey);
     else if (k === 'q') {
       if (this.mode === 'build') this.setMode('normal');
-      else if (this.hover) { const o = this.game.entAt(this.hover[0], this.hover[1]); if (o) this.selectItem(o._proto.item); }
+      else if (this.app.mouseTile) { const t = this.app.mouseTile, o = this.game.entAt(t[0], t[1]); if (o) this.selectItem(o._proto.item); }
     } else if (k === 'b') ui.toggleSheet('build');
     else if (k === 'e') ui.toggleSheet('inventory');
     else if (k === 't') ui.toggleSheet('tech');
