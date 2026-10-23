@@ -5,14 +5,16 @@ import { UI } from './ui/ui.js';
 import { Controller } from './input.js';
 import { audio } from './audio.js';
 import { buildIconSheet, iconHTML } from './ui/icons.js';
-import { OfflineSession, HostSession, ClientSession, listLobbies, OPEN_ROOM, OPEN_BROKER, probeOpenWorld, newerCopy } from './net/session.js';
-import { listSaves, putSave, getSave, deleteSave } from './saves.js';
+import { HostSession, ClientSession, listLobbies, OPEN_BROKER, probeOpenWorld, newerCopy, plotRoom, plotOfRoom } from './net/session.js';
+import { putSave, getSave } from './saves.js';
 import { TECHS, ITEMS } from './data.js';
 import { JintoriView } from './jintori/view.js';
+import { LocalJintori } from './jintori/store.js';
+import { PREFS } from './jintori/japan.js';
+import { PLOT_AT, PLOT_COLS, PLOT_ROWS, plotSeed } from './plots.js';
 
 const COLORS = ['#f0a64a', '#e8574a', '#5ea2d8', '#73b65b', '#c77ddb', '#e3d34f', '#4fd1c5', '#f2f2f2'];
-const OPEN_SAVE_ID = 'open-world'; // this device's copy of the shared world
-const OPEN_SEED = 20261023;
+const plotSaveId = p => 'plot-' + p; // this device's copy of a prefecture plot
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const store = {
   get(k, d) { try { const v = localStorage.getItem('ironfield.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
@@ -22,27 +24,20 @@ const store = {
 const app = {
   dpr: Math.min(window.devicePixelRatio || 1, 2),
   renderer: null, ui: null, ctrl: null, session: null, audio,
-  saveId: null, running: false, mouseTile: null,
+  running: false, mouseTile: null,
+  jintoriStore: new LocalJintori(), // shared by the title screen (your prefecture = your plot) and the map
   submit(cmd) { if (this.session) this.session.submit(cmd); },
-  shareUrl() {
-    const base = location.origin + location.pathname;
-    return this.session && this.session.shareUrl ? this.session.shareUrl(base) : base;
-  },
+  shareUrl() { return location.origin + location.pathname; }, // everyone picks their own prefecture's plot
   async saveNow(manual = false) {
     const s = this.session;
-    if (!s || !s.game || (s.mode === 'client' && !s.open)) return;
+    if (!s || !s.game || !s.open) return;
     try {
       const g = s.game;
       const tick = g.tick;
       const bytes = await g.serialize();
-      if (s.open) {
-        // everyone in the shared world keeps a copy, so it survives even if the broker copy is lost
-        await putSave({ id: OPEN_SAVE_ID, name: g.name, tick, date: Date.now(), bytes, epoch: s.mode === 'host' ? s.epoch : s.hostEpoch });
-        if (s.mode === 'host') s.publishWorld(bytes, tick);
-      } else {
-        if (!this.saveId) this.saveId = 'w' + Date.now().toString(36);
-        await putSave({ id: this.saveId, name: g.name, tick, date: Date.now(), bytes });
-      }
+      // everyone in a plot keeps a copy, so it survives even if the broker copy is lost
+      await putSave({ id: plotSaveId(plotOfRoom(s.room)), name: g.name, tick, date: Date.now(), bytes, epoch: s.mode === 'host' ? s.epoch : s.hostEpoch });
+      if (s.mode === 'host') s.publishWorld(bytes, tick);
       if (manual) this.ui.toast('保存しました', 'good');
     } catch (e) {
       if (manual) this.ui.toast('保存できませんでした: ' + e.message, 'err');
@@ -57,6 +52,11 @@ const app = {
     document.getElementById('hud').hidden = true;
     if (app.jintori) app.jintori.close();
     showTitle();
+  },
+  // your prefecture changed on the map: your factory moves to that plot
+  async movePlot(p) {
+    await this.quitToTitle();
+    enterPlot(p);
   },
 };
 window.__ironfield = app;
@@ -115,7 +115,7 @@ async function enterGame(session) {
   cam.zoom = 46 * app.dpr;
   document.getElementById('title').hidden = true;
   document.getElementById('hud').hidden = false;
-  if (!app.ui) { app.ui = new UI(app); app.ctrl = new Controller(app); app.jintori = new JintoriView(app); }
+  if (!app.ui) { app.ui = new UI(app); app.ctrl = new Controller(app); app.jintori = new JintoriView(app, app.jintoriStore); }
   bindSession(session);
   app.ctrl.setMode('normal');
   app.ui.onModeChange();
@@ -153,7 +153,7 @@ function bindSession(session) {
   });
   session.on('status', st => {
     if (!st || !live() || st.message === 'Closed') return; // we closed it ourselves
-    if (st.state === 'disconnected' && session.mode === 'client' && session.open) { scheduleTakeover(session); return; }
+    if (st.state === 'disconnected' && session.mode === 'client') { scheduleTakeover(session); return; }
     if (st.state === 'disconnected') app.ui.toast('ホストとの接続が切れました。メニューからタイトルへ戻れます', 'err');
     if (st.state === 'error') app.ui.toast(st.message || '接続エラー', 'err');
   });
@@ -161,66 +161,67 @@ function bindSession(session) {
   session.on('rival', () => { if (live()) yieldToRival(session); });
 }
 
-// ------------------------------------------------------------------ the shared open world
-function joinOpen(joinTimeoutMs) {
+// ------------------------------------------------------------------ the plots of the big world
+function joinOpen(room, joinTimeoutMs) {
   const p = profile();
-  return ClientSession.create({ room: OPEN_ROOM, broker: OPEN_BROKER, name: p.name, color: p.color, pid: p.pid, joinTimeoutMs, loadGame: bytes => Game.load(bytes) });
+  return ClientSession.create({ room, broker: OPEN_BROKER, name: p.name, color: p.color, pid: p.pid, joinTimeoutMs, loadGame: bytes => Game.load(bytes) });
 }
-function hostOpen(game, epoch) {
+function hostOpen(room, game, epoch) {
   const p = profile();
-  return HostSession.create({ game, name: p.name, color: p.color, pid: p.pid, worldName: game.name, open: true, epoch });
+  return HostSession.create({ game, name: p.name, color: p.color, pid: p.pid, worldName: game.name, open: room, epoch });
 }
 const errText = e => (e && e.message ? e.message : String(e));
 
-// The newest copy of the shared world: the broker's retained copy or this device's own, whichever is later.
-async function newestOpenWorld(remote, lastHost) {
+// The newest copy of a plot: the broker's retained copy or this device's own, whichever is later.
+async function newestPlot(pref, remote, lastHost) {
   let local = null;
-  try { local = await getSave(OPEN_SAVE_ID); } catch { /* no local copy */ }
+  try { local = await getSave(plotSaveId(pref)); } catch { /* no local copy */ }
   const copies = [];
   if (remote) copies.push(remote);
   if (local && local.bytes) copies.push({ bytes: local.bytes, tick: local.tick | 0, epoch: local.epoch | 0 });
   copies.sort((a, b) => (newerCopy(a.epoch, a.tick, b.epoch, b.tick) ? -1 : 1));
   const epoch = Math.max(lastHost ? lastHost.e : 0, ...copies.map(c => c.epoch));
   for (const c of copies) {
-    try { return { game: await Game.load(c.bytes), epoch }; } catch (e) { console.warn('[open] unusable world copy', e); }
+    try { return { game: await Game.load(c.bytes), epoch }; } catch (e) { console.warn('[plot] unusable world copy', e); }
   }
-  return { game: Game.create({ seed: OPEN_SEED, name: 'みんなのワールド' }), epoch };
+  return { game: Game.create({ seed: plotSeed(pref), name: `${PREFS[pref].name}の区画` }), epoch };
 }
 
-async function startOpen() {
+async function enterPlot(pref) {
+  const P = PREFS[pref], room = plotRoom(pref);
   await ensureRenderer();
-  loading('みんなのワールドを探しています…');
+  loading(`${P.name}の区画を探しています…`);
   let probe;
-  try { probe = await probeOpenWorld(); }
-  catch (e) { loading(null); alertTitle('みんなのワールドにつながりませんでした: ' + errText(e)); return; }
+  try { probe = await probeOpenWorld(room); }
+  catch (e) { loading(null); alertTitle(`${P.name}の区画につながりませんでした: ` + errText(e)); return; }
   if (probe.host) {
-    loading('みんなのワールドに入っています…');
+    loading(`${P.name}の区画に入っています…`);
     try {
-      const s = await joinOpen(probe.live ? 20000 : 12000);
+      const s = await joinOpen(room, probe.live ? 20000 : 12000);
       loading(null);
       await enterGame(s);
-      app.ui.toast('みんなのワールドに入りました', 'good');
+      app.ui.toast(`${P.name}の区画に入りました`, 'good');
       return;
     } catch (e) {
       if (!/did not answer/.test(errText(e))) { loading(null); alertTitle('入れませんでした: ' + errText(e)); return; }
     }
   }
-  // nobody inside: this device opens the world from the newest copy
-  loading('だれもいないので、あなたがワールドを開いています…');
+  // nobody inside: this device opens the plot from the newest copy
+  loading('だれもいないので、あなたが区画を開いています…');
   try {
-    const { game, epoch } = await newestOpenWorld(probe.world, probe.host);
-    const h = await hostOpen(game, epoch + 1);
+    const { game, epoch } = await newestPlot(pref, probe.world, probe.host);
+    const h = await hostOpen(room, game, epoch + 1);
     loading(null);
     await enterGame(h);
-    app.ui.toast('みんなのワールドを開きました。だれでも入ってこられます', 'good');
+    app.ui.toast(`${P.name}の区画を開きました。同じ県の人が入ってこられます`, 'good');
     app.saveNow();
   } catch (e) {
     loading(null);
-    alertTitle('ワールドを開けませんでした: ' + errText(e));
+    alertTitle('区画を開けませんでした: ' + errText(e));
   }
 }
 
-// The host left the shared world. Remaining players take over in join order, a few seconds apart,
+// The host left the plot. Remaining players take over in join order, a few seconds apart,
 // so normally one of them does; the others see its frames and switch to it on their own.
 function scheduleTakeover(s) {
   if (s._takeover) return;
@@ -232,7 +233,7 @@ function scheduleTakeover(s) {
     const game = s.game, epoch = s.hostEpoch + 1;
     s.close();
     try {
-      bindSession(await hostOpen(game, epoch));
+      bindSession(await hostOpen(s.room, game, epoch));
       app.ui.toast('あなたがワールドを引き継ぎました', 'good');
       app.saveNow();
     } catch (e) {
@@ -241,51 +242,15 @@ function scheduleTakeover(s) {
   }, 1500 + rank * 3000 + Math.random() * 600);
 }
 
-// Another host is running the shared world (we woke from the background, or two of us opened it at once).
+// Another host is running the plot (we woke from the background, or two of us opened it at once).
 async function yieldToRival(h) {
   await app.saveNow(); // keep our side on this device
   h.close();
   app.ui.toast('別の人がワールドを動かしていたので、そちらに合流します');
   try {
-    bindSession(await joinOpen(15000));
+    bindSession(await joinOpen(h.room, 15000));
   } catch (e) {
     app.ui.toast('合流できませんでした。タイトルから入り直してください: ' + errText(e), 'err');
-  }
-}
-
-async function startOffline(game) {
-  await ensureRenderer();
-  const p = profile();
-  const s = new OfflineSession({ game, name: p.name, color: p.color, pid: p.pid });
-  await enterGame(s);
-}
-async function startHost(game) {
-  await ensureRenderer();
-  loading('サーバーを立てています…');
-  try {
-    const p = profile();
-    const s = await HostSession.create({ game, name: p.name, color: p.color, pid: p.pid, worldName: game.name });
-    loading(null);
-    await enterGame(s);
-    app.ui.toast(`部屋番号 ${s.room} で公開しました。メニューから招待リンクを送れます`, 'good');
-  } catch (e) {
-    loading(null);
-    alertTitle('サーバーを立てられませんでした: ' + (e && e.message ? e.message : e));
-  }
-}
-async function startClient(room, broker) {
-  await ensureRenderer();
-  loading(`部屋 ${room} に接続しています…`);
-  try {
-    const p = profile();
-    const s = await ClientSession.create({ room, broker, name: p.name, color: p.color, pid: p.pid, loadGame: bytes => Game.load(bytes) });
-    loading(null);
-    app.saveId = null;
-    await enterGame(s);
-    app.ui.toast(`${room} に参加しました`, 'good');
-  } catch (e) {
-    loading(null);
-    alertTitle('参加できませんでした: ' + (e && e.message ? e.message : e));
   }
 }
 
@@ -309,7 +274,7 @@ function frame(now) {
   const cur = app.mouseTile ? { cursorX: app.mouseTile[0] + 0.5, cursorY: app.mouseTile[1] + 0.5 } : { cursorX: cam.x, cursorY: cam.y };
   s.setPresence({ x: Math.round(cam.x * 10) / 10, y: Math.round(cam.y * 10) / 10, z: Math.round(cam.zoom), ...roundCur(cur), name: p.name, color: p.color });
   if (now - (app.lastAmb || 0) > 200) { app.lastAmb = now; audio.setAmbience(app.renderer.visibleCounts); audio.setDaylight(g.daylight() / 1000); }
-  if ((s.mode !== 'client' || s.open) && now - app.lastSave > 30000) { app.lastSave = now; app.saveNow(); }
+  if (now - app.lastSave > 30000) { app.lastSave = now; app.saveNow(); }
 }
 function roundCur(c) { return { cursorX: Math.round(c.cursorX * 10) / 10, cursorY: Math.round(c.cursorY * 10) / 10 }; }
 
@@ -349,38 +314,29 @@ function alertTitle(msg) {
   if (el) { el.textContent = msg; el.hidden = false; }
 }
 
-function getInvite() {
-  const q = new URLSearchParams(location.search);
-  const room = (q.get('room') || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
-  const b = parseInt(q.get('b') || '0', 10) || 0;
-  return room ? { room, broker: b } : null;
-}
-
 async function showTitle() {
   const t = document.getElementById('title');
   t.hidden = false;
   const name = store.get('name', '');
   const color = store.get('color', COLORS[0]);
-  const inv = getInvite();
+  const js = app.jintoriStore;
+  js.refresh(Date.now());
+  const tiles = [];
+  for (const [pref, { c, r }] of PLOT_AT) {
+    const P = PREFS[pref];
+    tiles.push(`<button class="plot${P.short.length > 2 ? ' l3' : ''}" data-p="${pref}" style="grid-column:${c + 1};grid-row:${r + 1};--pc:${P.color}" aria-label="${esc(P.name)}">${esc(P.short)}<i></i></button>`);
+  }
   t.innerHTML = `<div class="card panel">
     <div class="logo"><div class="word">IRONFIELD</div><div class="sub">みんなで作る 自動化工場</div></div>
     <div id="title-msg" class="toast panel err" hidden></div>
-    ${inv ? `<div class="section inset" style="padding:12px"><h3>招待されています</h3><div class="row"><span class="room-code">${esc(inv.room)}</span><div class="sp"></div><button class="btn primary" id="t-invite">参加する</button></div></div>` : ''}
     <div class="section"><h3>あなたの名前</h3>
       <input type="text" id="t-name" maxlength="20" placeholder="プレイヤー" value="${esc(name)}" autocomplete="nickname">
       <div class="colors" id="t-colors">${COLORS.map(c => `<button style="background:${c}" data-c="${c}" class="${c === color ? 'on' : ''}" aria-label="色 ${c}"></button>`).join('')}</div></div>
-    <div class="section"><h3>みんなのワールド</h3>
-      <div class="row"><button class="btn primary" id="t-open" style="flex:1">みんなのワールドに入る</button></div>
-      <div class="muted" style="font-size:12px">だれでも入れる、ひとつの共通の世界です。だれもいないときに入っても、前の続きから遊べます。</div></div>
-    <div class="section"><h3>新しいワールド</h3>
-      <div class="row"><button class="btn" id="t-host" style="flex:1">自分のワールドを公開する</button></div>
-      <div class="row"><button class="btn" id="t-solo" style="flex:1">ひとりで遊ぶ</button>
-      <label class="row" style="gap:6px;font-size:13px"><input type="checkbox" id="t-sandbox"> クリエイティブ</label></div></div>
-    <div class="section"><h3>部屋に参加</h3>
-      <div class="row" style="flex-wrap:nowrap"><input type="text" id="t-room" maxlength="8" placeholder="部屋番号（例 K7Q2XM）" style="text-transform:uppercase" autocomplete="off"><button class="btn go" id="t-join">参加</button></div>
-      <div class="row"><h3 style="font-size:13px">公開中のワールド</h3><div class="sp"></div><button class="btn small" id="t-refresh">更新</button></div>
-      <div class="lobby" id="t-lobby"><div class="muted">探しています…</div></div></div>
-    <div class="section"><h3>保存したワールド</h3><div class="col saves" id="t-saves"><div class="muted">読み込み中…</div></div></div>
+    <div class="section"><h3>自分の県の区画を選ぶ</h3>
+      <div class="muted" style="font-size:12px">ひとつの大きなワールドを、47の都道府県の区画に分けています。自分の県の区画で、同じ県の人と工場を作ります。</div>
+      <div class="plots" id="t-plots" style="grid-template-columns:repeat(${PLOT_COLS},1fr);grid-template-rows:repeat(${PLOT_ROWS},1fr)">${tiles.join('')}</div>
+      <div class="muted" id="t-plot-note" style="font-size:12px;min-height:1.5em"></div>
+      <div class="row"><button class="btn primary" id="t-enter" style="flex:1"></button></div></div>
     <div class="muted" style="font-size:11px;text-align:center">iPhone では共有ボタンから「ホーム画面に追加」すると全画面で遊べます</div>
   </div>`;
   const $ = id => document.getElementById(id);
@@ -392,72 +348,44 @@ async function showTitle() {
     store.set('color', b.dataset.c);
     for (const x of $('t-colors').children) x.classList.toggle('on', x === b);
   });
-  const newGame = () => Game.create({ name: `${(store.get('name', '') || 'プレイヤー')}の工場`, sandbox: $('t-sandbox').checked });
-  $('t-solo').onclick = () => { audio.unlock(); saveName(); app.saveId = null; startOffline(newGame()); };
-  $('t-host').onclick = () => { audio.unlock(); saveName(); app.saveId = null; startHost(newGame()); };
-  $('t-open').onclick = () => { audio.unlock(); saveName(); app.saveId = null; startOpen(); };
-  $('t-join').onclick = () => {
-    audio.unlock(); saveName();
-    const code = $('t-room').value.toUpperCase().replace(/[^A-Z0-9]/g, '');
-    const [room, b] = code.length > 6 ? [code.slice(0, 6), parseInt(code.slice(6), 10) || 0] : [code, 0];
-    if (room.length < 4) { $('title-msg').textContent = '部屋番号を入れてください'; $('title-msg').hidden = false; return; }
-    startClient(room, b);
-  };
-  if (inv) $('t-invite').onclick = () => { audio.unlock(); saveName(); if (inv.room === OPEN_ROOM) startOpen(); else startClient(inv.room, inv.broker); };
-  $('t-refresh').onclick = () => refreshLobby();
-  refreshLobby();
-  refreshSaves();
-}
-
-async function refreshLobby() {
-  const box = document.getElementById('t-lobby');
-  if (!box) return;
-  box.innerHTML = '<div class="muted">探しています…</div>';
-  let list = [];
-  try { list = await listLobbies(2500); } catch { list = []; }
-  if (!document.getElementById('t-lobby')) return;
-  if (!list.length) { box.innerHTML = '<div class="muted">今は公開中のワールドがありません</div>'; return; }
-  box.innerHTML = list.map(l => `<div class="item" data-room="${esc(l.room)}" data-b="${l.broker | 0}" role="button" tabindex="0">
-    <div style="flex:1;min-width:0"><b>${esc(l.world || '名前のない工場')}</b><div class="muted" style="font-size:12px">ホスト ${esc(l.host || '?')}・${l.players | 0}人</div></div>
-    <span class="chip">${esc(l.room)}</span></div>`).join('');
-  box.onclick = e => {
-    const it = e.target.closest('.item');
-    if (!it) return;
-    audio.unlock();
-    store.set('name', document.getElementById('t-name').value.trim().slice(0, 20));
-    if (it.dataset.room === OPEN_ROOM) startOpen();
-    else startClient(it.dataset.room, parseInt(it.dataset.b, 10) || 0);
-  };
-}
-
-async function refreshSaves() {
-  const box = document.getElementById('t-saves');
-  if (!box) return;
-  const saves = (await listSaves()).filter(s => s.id !== OPEN_SAVE_ID); // the shared world's copy is not a world of your own
-  if (!saves.length) { box.innerHTML = '<div class="muted">まだありません</div>'; return; }
-  box.innerHTML = saves.map(s => `<div class="item"><div style="flex:1;min-width:0"><b>${esc(s.name)}</b>
-    <div class="muted" style="font-size:12px">${new Date(s.date).toLocaleString('ja-JP')}・${Math.floor(s.tick / 3600)}分</div></div>
-    <button class="btn small" data-act="solo" data-id="${s.id}">続ける</button>
-    <button class="btn small primary" data-act="host" data-id="${s.id}">公開</button>
-    <button class="btn small danger" data-act="del" data-id="${s.id}" aria-label="削除">✕</button></div>`).join('');
-  box.onclick = async e => {
-    const b = e.target.closest('button[data-act]');
-    if (!b) return;
-    audio.unlock();
-    const id = b.dataset.id;
-    if (b.dataset.act === 'del') {
-      if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = '削除する'; return; }
-      await deleteSave(id); refreshSaves(); return;
+  let pick = js.pref;
+  const people = new Map();
+  const locked = !js.canChoosePref();
+  const paint = () => {
+    for (const b of $('t-plots').children) {
+      const p = +b.dataset.p, n = people.get(p) || 0;
+      b.classList.toggle('on', p === pick);
+      b.classList.toggle('busy', n > 0);
+      b.disabled = locked && p !== js.pref;
+      b.title = `${PREFS[p].name}${n ? `（${n}人）` : ''}`;
     }
-    const rec = await getSave(id);
-    if (!rec) return;
-    loading('ワールドを読み込んでいます…');
-    const g = await Game.load(rec.bytes);
-    loading(null);
-    app.saveId = id;
-    store.set('name', document.getElementById('t-name').value.trim().slice(0, 20));
-    if (b.dataset.act === 'host') startHost(g); else startOffline(g);
+    const P = PREFS[pick], n = people.get(pick) || 0;
+    $('t-enter').disabled = !pick;
+    $('t-enter').textContent = P ? `${P.name}の区画に入る` : '県をえらんでください';
+    $('t-plot-note').textContent = locked
+      ? 'このシーズンは陣取りで旗を使ったので、県は来月まで変えられません'
+      : P ? (n ? `いま${n}人が作業しています` : 'いまはだれもいません。入ると、あなたが区画を開きます') : '';
   };
+  $('t-plots').onclick = e => {
+    const b = e.target.closest('button[data-p]');
+    if (!b || b.disabled) return;
+    audio.unlock();
+    pick = +b.dataset.p;
+    audio.play('click');
+    paint();
+  };
+  $('t-enter').onclick = () => {
+    if (!pick) return;
+    audio.unlock(); saveName();
+    if (pick !== js.pref && !js.choosePref(pick)) { alertTitle('県を変えられませんでした'); return; }
+    enterPlot(pick);
+  };
+  paint();
+  // how many people are in each plot right now (each plot's host keeps a lobby entry up to date)
+  try {
+    for (const l of await listLobbies(2500)) { const p = plotOfRoom(l.room); if (p) people.set(p, l.players); }
+  } catch { /* the counts are only a hint */ }
+  if ($('t-plots')) paint();
 }
 
 // Hidden tabs get no animation frames. A worker timer keeps the simulation (and a host's world) running

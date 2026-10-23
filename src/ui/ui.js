@@ -4,6 +4,8 @@ import { invCount } from '../sim/inventory.js';
 import { iconHTML } from './icons.js';
 import { isFuel, smeltRecipe, drillArea } from '../sim/machines.js';
 import { isRotatable } from '../sim/game.js';
+import { plotOfRoom } from '../net/session.js';
+import { PREFS } from '../jintori/japan.js';
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtN = n => (n >= 10000 ? (n / 1000).toFixed(n >= 100000 ? 0 : 1) + 'k' : String(n));
@@ -404,7 +406,8 @@ export class UI {
     const s = this.app.session;
     const st = s.status || {};
     const n = (s.players || []).length || [...g.players.values()].filter(p => p.online).length;
-    const mode = s.mode === 'offline' ? 'ひとり' : s.open ? 'みんな' : s.mode === 'host' ? 'ホスト' : '参加中';
+    const plot = PREFS[plotOfRoom(s.room)];
+    const mode = s.mode === 'offline' ? 'ひとり' : plot ? plot.short : s.mode === 'host' ? 'ホスト' : '参加中';
     const col = st.state === 'playing' || s.mode === 'offline' ? '#8fd16f' : st.state === 'disconnected' || st.state === 'error' ? '#ff7a6a' : '#ffcf7a';
     const jt = this.app.jintori && this.app.jintori.chipText();
     if (jt) {
@@ -630,21 +633,16 @@ export class UI {
     let b = '';
     if (s.mode !== 'offline') {
       const url = this.app.shareUrl();
-      b += `<div class="section"><h3>みんなを招待</h3>
-        <div class="row"><span class="muted">部屋番号</span><span class="room-code">${esc(s.room || '')}</span></div>
+      b += `<div class="section"><h3>友だちをさそう</h3>
         <div class="sharebox"><code class="inset">${esc(url)}</code></div>
         <div class="row"><button class="btn primary" data-a="share">リンクを送る</button><button class="btn" data-a="copy" data-text="${esc(url)}">コピー</button></div>
-        <div class="muted" style="font-size:12px">${s.open
-          ? 'みんなのワールドは、だれでも入れる共通の世界です。世界を動かしている人が抜けても、残った人が自動で引き継ぎます。全員が抜けても、次に入った人が続きから遊べます。'
-          : 'このリンクを開くと、だれでもこのワールドに参加できます。ホストがアプリを閉じるとワールドは止まります。'}</div></div>`;
+        <div class="muted" style="font-size:12px">ひとつの大きなワールドを47の都道府県の区画に分けています。同じ県の人はこの区画に入ってきます。区画を動かしている人が抜けても、残った人が自動で引き継ぎます。全員が抜けても、次に入った人が続きから遊べます。</div></div>`;
       const st = s.status || {};
       b += `<div class="section"><h3>参加者</h3>${(s.players || []).map(p => `<div class="row"><span class="dot" style="background:${/^#[0-9a-f]{6}$/i.test(p.color) ? p.color : '#fff'}"></span>${esc(p.name)}${p.pid === s.localPid ? '<span class="muted">（あなた）</span>' : ''}</div>`).join('') || '<div class="muted">まだだれもいません</div>'}
         <div class="muted" style="font-size:12px">${st.state === 'playing' ? `接続中${st.ping ? `・遅れ ${Math.round(st.ping)}ms` : ''}` : esc(st.message || st.state || '')}</div></div>`;
       b += `<div class="section"><h3>チャット</h3>
         <div class="inset" style="padding:8px;max-height:160px;overflow-y:auto;font-size:13px">${this.chatLines.slice(-30).map(l => `<div><b style="color:${/^#[0-9a-f]{6}$/i.test(l.color) ? l.color : '#fff'}">${esc(l.name)}</b> ${esc(l.text)}</div>`).join('') || '<span class="muted">メッセージはまだありません</span>'}</div>
         <div class="row" style="flex-wrap:nowrap"><input type="text" id="chat-in" maxlength="200" placeholder="メッセージ" autocomplete="off"><button class="btn" data-a="chat-send">送る</button></div></div>`;
-    } else {
-      b += `<div class="section"><h3>ひとりで遊んでいます</h3><div class="muted" style="font-size:13px">みんなで遊ぶには、タイトル画面で「サーバーを立てる」を選びます。このワールドの続きからでも立てられます。</div></div>`;
     }
     const day = g.daylight();
     b += `<div class="section"><h3>ワールド</h3><div class="kv">

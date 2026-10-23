@@ -9,11 +9,18 @@ export const BROKERS = [
 
 const PREFIX = 'ironfield/v1/';
 
-// The shared open world: one fixed room that anyone can enter. Whoever is inside hosts it; when the
-// host leaves, a remaining player takes over, and a retained copy on the broker lets the next visitor
-// resume it when nobody is inside.
-export const OPEN_ROOM = 'PLAZA2';
+// Open rooms: fixed rooms that anyone can enter. Whoever is inside hosts one; when the host leaves, a
+// remaining player takes over, and a retained copy on the broker lets the next visitor resume it when
+// nobody is inside. Each of the 47 prefecture plots of the big world is one open room.
+export const OPEN_ROOM = 'PLAZA2'; // the old single shared world, no longer offered on the title screen
 export const OPEN_BROKER = 0;
+export const plotRoom = (p) => 'KENZ' + ROOM_ALPHABET[p >> 5] + ROOM_ALPHABET[p & 31]; // p = 1..47
+export const plotOfRoom = (r) => {
+  const m = /^KENZ([A-HJ-NP-Z2-9])([A-HJ-NP-Z2-9])$/.exec(r || '');
+  const p = m ? ROOM_ALPHABET.indexOf(m[1]) * 32 + ROOM_ALPHABET.indexOf(m[2]) : 0;
+  return p >= 1 && p <= 47 ? p : 0;
+};
+const isOpenRoom = (r) => r === OPEN_ROOM || plotOfRoom(r) > 0;
 const MAX_WORLD_CHUNKS = 64; // ~2.3 MB retained world copy
 const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const PID_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -575,8 +582,8 @@ export class HostSession extends BaseSession {
   constructor(opts) {
     super('host', opts);
     this.worldName = cleanText(opts.worldName, 32) || 'Ironfield';
-    this.open = !!opts.open;
-    this.room = this.open ? OPEN_ROOM : makeRoomCode();
+    this.open = isOpenRoom(opts.open); // open: the open room's name, or nothing for a private room
+    this.room = this.open ? opts.open : makeRoomCode();
     this.epoch = isInt(opts.epoch) && opts.epoch >= 0 ? opts.epoch : 0;
     this._pending = []; // [{json, cmd}] applied at the next tick
     this._frameBuf = [];
@@ -603,7 +610,7 @@ export class HostSession extends BaseSession {
   static async create({ game, name, color, worldName, pid, broker, open, epoch } = {}) {
     if (!game || !isInt(game.tick)) throw new Error('HostSession needs a game');
     const s = new HostSession({ game, name, color, worldName, pid, open, epoch });
-    await s._connect(open ? OPEN_BROKER : isInt(broker) && broker >= 0 && broker < BROKERS.length ? broker : 0);
+    await s._connect(s.open ? OPEN_BROKER : isInt(broker) && broker >= 0 && broker < BROKERS.length ? broker : 0);
     return s;
   }
 
@@ -966,7 +973,7 @@ export class ClientSession extends BaseSession {
     super('client', opts);
     this.room = opts.room;
     this.brokerIndex = opts.broker;
-    this.open = opts.room === OPEN_ROOM;
+    this.open = isOpenRoom(opts.room);
     this._host = null; // {hp, e} of the host we follow
     this._joinGiveupMs = isInt(opts.joinTimeoutMs) && opts.joinTimeoutMs > 0 ? opts.joinTimeoutMs : JOIN_GIVEUP_MS;
     this._loadGame = opts.loadGame;
@@ -1437,14 +1444,15 @@ export class ClientSession extends BaseSession {
 
 // ---------------------------------------------------------------- open world probe
 
-/** Reads what the open world has on its broker: is someone hosting it right now (live frames, or else a
+/** Reads what an open room has on its broker: is someone hosting it right now (live frames, or else a
  *  fresh retained lobby entry), and the newest complete retained world copy.
  *  Returns {host: {hp, e} | null, live: bool, world: {bytes, tick, epoch} | null}. */
-export async function probeOpenWorld(listenMs = 2000) {
+export async function probeOpenWorld(room = OPEN_ROOM, listenMs = 2000) {
+  if (!isOpenRoom(room)) throw new Error('Not an open room');
   const mq = await connectBroker(OPEN_BROKER, CLIENT_CONNECT_MS, { reconnectPeriod: 0 });
-  const lobbyTopic = PREFIX + 'lobby/' + OPEN_ROOM;
-  const downTopic = PREFIX + OPEN_ROOM + '/down';
-  const base = PREFIX + OPEN_ROOM + '/save/';
+  const lobbyTopic = PREFIX + 'lobby/' + room;
+  const downTopic = PREFIX + room + '/down';
+  const base = PREFIX + room + '/save/';
   const chunkRe = /^([01])\/(\d{1,2})$/;
   let lobby = null;
   let live = null; // host seen sending frames during the probe

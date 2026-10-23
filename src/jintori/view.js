@@ -1,7 +1,7 @@
 // The Japan map screen: pick your prefecture, look around, put flags made in the factory on squares.
 import { GRID, PREFS, BRIDGES } from './japan.js';
 import * as J from './rules.js';
-import { LocalJintori } from './store.js';
+import { plotOfRoom } from '../net/session.js';
 import { invCount } from '../sim/inventory.js';
 import { iconHTML } from '../ui/icons.js';
 
@@ -13,9 +13,9 @@ const SEA = '#14202b';
 const FIT = { x0: 0, y0: 0, x1: 226, y1: 222 }; // the main islands and Okinawa (far Pacific islands stay off the first view)
 
 export class JintoriView {
-  constructor(app) {
+  constructor(app, store) {
     this.app = app;
-    this.store = new LocalJintori();
+    this.store = store;
     this.isOpen = false;
     this.sel = -1;
     this.pending = null;   // a flag sent to the factory, waiting for it to leave the inventory
@@ -124,6 +124,7 @@ export class JintoriView {
       case 'pref': {
         const p = parseInt(t.dataset.p, 10);
         if (this.store.choosePref(p)) {
+          if (p !== plotOfRoom(this.app.session && this.app.session.room)) { this.app.movePlot(p); break; } // your factory lives in your prefecture's plot
           this.sheet = null; this._front = null; this.sel = -1;
           this.msg = { text: `${PREFS[p].name}の一員になりました。県庁のとなりのマスから広げていきましょう`, kind: 'good' };
           this._focus(PREFS[p].capital, 14);
