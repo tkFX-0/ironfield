@@ -576,6 +576,7 @@ export class Controller {
 
   _key(e) {
     if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    if (this.app.jintori && this.app.jintori.isOpen) return; // the map screen is on top
     this._keys ||= {};
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     const onUp = ev => { const kk = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key; this._keys[kk] = false; if (kk === k) window.removeEventListener('keyup', onUp); };

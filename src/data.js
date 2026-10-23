@@ -101,6 +101,8 @@ const list = [
   I('pumpjack', '原油ポンプ', 'production', 20, { place: 'pumpjack' }),
   I('lab', '研究所', 'production', 10, { place: 'lab' }),
   I('rocket-silo', 'ロケットサイロ', 'production', 1, { place: 'rocket-silo' }),
+  // territory battle (docs/陣取り設計.md): used on the Japan map, at most a few a day
+  I('flag', '旗', 'intermediate', 50),
 ];
 export const ITEMS = Object.fromEntries(list.map((it, i) => [it.name, { ...it, order: i }]));
 export const ITEM_LIST = list.map(i => i.name);
@@ -180,6 +182,9 @@ const recipeList = [
   R('lab', 'crafting', 2, [['electronic-circuit', 10], ['iron-gear-wheel', 10], ['transport-belt', 4]], [['lab', 1]], { enabled: true }),
   R('rocket-silo', 'crafting', 30, [['steel-plate', 500], ['processing-unit', 100], ['engine-unit', 100], ['pipe', 100], ['stone-brick', 500]], [['rocket-silo', 1]]),
   R('rocket-part', 'rocket', 3, [['processing-unit', 10], ['low-density-structure', 10], ['rocket-fuel', 10]], [], { ja: 'ロケット部品', hidden: true }),
+  // territory battle flags: the first one can be made by hand; research gives a cheaper machine-only one
+  R('flag', 'crafting', 10, [['iron-gear-wheel', 5], ['copper-cable', 10], ['electronic-circuit', 3], ['stone-brick', 4]], [['flag', 1]], { enabled: true }),
+  R('flag-improved', 'crafting', 5, [['iron-gear-wheel', 2], ['electronic-circuit', 2], ['stone-brick', 2]], [['flag', 1]], { ja: '旗（改良）', nohand: true }),
 ];
 export const RECIPES = Object.fromEntries(recipeList.map((r, i) => [r.name, { ...r, fing: r.fing || [], fres: r.fres || [], order: i }]));
 export const RECIPE_LIST = recipeList.map(r => r.name);
@@ -294,6 +299,7 @@ const techList = [
   T('low-density-structure', '軽量構造材', RGB, 300, 45, ['advanced-material-processing-2', 'chemical-science-pack'], ['low-density-structure']),
   T('rocket-fuel', 'ロケット燃料', RGB, 300, 45, ['chemical-science-pack'], ['rocket-fuel']),
   T('rocket-silo', 'ロケットサイロ', RGB, 500, 30, ['advanced-electronics-2', 'low-density-structure', 'rocket-fuel', 'automation-3'], ['rocket-silo', 'rocket-part']),
+  T('flag-improved', '旗の改良', RED, 40, 15, ['automation'], ['flag-improved']),
 ];
 export const TECHS = Object.fromEntries(techList.map((t, i) => [t.name, { ...t, order: i }]));
 export const TECH_LIST = techList.map(t => t.name);

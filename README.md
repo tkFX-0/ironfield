@@ -9,6 +9,7 @@ Mine, smelt, belt, research, refine oil and launch a rocket together.
 - Single player, or host a world of your own that anyone can join with a link (no account, no server of our own).
 - Multiplayer is deterministic lockstep over public MQTT brokers: only player commands travel; every peer runs the same simulation.
 - All art and sound are generated procedurally at load time. No build step: plain ES modules.
+- Prefecture territory battle (陣取り, design in `docs/陣取り設計.md`): flags made in the factory are placed on a 10 km grid of Japan, 3 per day. For now the map and the other prefectures are simulated on the device (`src/jintori/`).
 
 ## Run locally
 
@@ -16,7 +17,7 @@ Mine, smelt, belt, research, refine oil and launch a rocket together.
 npx http-server . -p 8140 -c-1
 ```
 
-Then open http://localhost:8140/. Headless checks: `node tools/simtest.mjs`, `node tools/stress.mjs`.
+Then open http://localhost:8140/. Headless checks: `node tools/simtest.mjs`, `node tools/stress.mjs`, `node tools/jintori-test.mjs`.
 
 ## Layout
 

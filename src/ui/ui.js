@@ -53,7 +53,10 @@ export class UI {
           <div id="goal-chip" class="panel" data-a="goal-toggle" role="button" tabindex="0" style="pointer-events:auto"></div>
         </div>
         <div class="sp"></div>
-        <div id="netbadge" class="panel" data-a="sheet" data-s="menu" role="button" tabindex="0" aria-label="メニュー"></div>
+        <div class="col" style="gap:6px;align-items:flex-end">
+          <div id="netbadge" class="panel" data-a="sheet" data-s="menu" role="button" tabindex="0" aria-label="メニュー"></div>
+          <div id="flag-chip" class="panel" data-a="jintori" role="button" tabindex="0" aria-label="陣取りの地図"></div>
+        </div>
         <div id="minimap-wrap" class="panel"><canvas id="minimap" width="256" height="256" aria-label="地図"></canvas></div>
       </div>
       <div id="toasts" aria-live="polite"></div>
@@ -106,6 +109,7 @@ export class UI {
     const sub = c => app.submit(c);
     switch (a) {
       case 'sheet': this.toggleSheet(d.s); break;
+      case 'jintori': this.closeSheet(); app.jintori.open(); break;
       case 'goal-toggle': this.goalsOpen = !this.goalsOpen; this._goalHTML = ''; this._renderGoal(); break;
       case 'close': this.closeSheet(); break;
       case 'mode-remove': app.ctrl.setMode(app.ctrl.mode === 'remove' ? 'normal' : 'remove'); break;
@@ -402,6 +406,11 @@ export class UI {
     const n = (s.players || []).length || [...g.players.values()].filter(p => p.online).length;
     const mode = s.mode === 'offline' ? 'ひとり' : s.open ? 'みんな' : s.mode === 'host' ? 'ホスト' : '参加中';
     const col = st.state === 'playing' || s.mode === 'offline' ? '#8fd16f' : st.state === 'disconnected' || st.state === 'error' ? '#ff7a6a' : '#ffcf7a';
+    const jt = this.app.jintori && this.app.jintori.chipText();
+    if (jt) {
+      const sig = jt.allow + ':' + jt.flags;
+      if (this._flagSig !== sig) { this._flagSig = sig; this.el('flag-chip').innerHTML = `${iconHTML('item:flag', 22)}<span>陣取り</span><b>${jt.flags}</b><span class="muted">今日あと${jt.allow}本</span>`; }
+    }
     this.el('netbadge').innerHTML = `<span class="dot" style="background:${col}"></span>${mode}${s.mode !== 'offline' ? ` ${SVG.people.replace('<svg', '<svg style="width:14px;height:14px"')} ${n}` : ''}`;
   }
   _renderGoal() {

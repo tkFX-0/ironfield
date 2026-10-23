@@ -1774,6 +1774,14 @@ function itemFlask(ctx, liq) {
   stroke(ctx, p, OUT, 2);
   const cork = rrect(24, 4, 16, 8, 2); fill(ctx, cork, lg(ctx, 0, 4, 0, 12, 0, '#a07a4c', 1, '#5c3e20')); stroke(ctx, cork, OUT, 1.3);
 }
+function itemFlag(ctx) {
+  fill(ctx, rrect(17, 50, 18, 7, 2), '#6e6a64'); stroke(ctx, rrect(17, 50, 18, 7, 2), OUT, 1.5);
+  seg(ctx, 26, 52, 26, 7, OUT, 6); seg(ctx, 26, 52, 26, 7, '#c9ccd0', 3);
+  const f = new Path2D(); f.moveTo(28, 9); f.bezierCurveTo(38, 5, 46, 14, 58, 10); f.lineTo(58, 32); f.bezierCurveTo(46, 36, 38, 27, 28, 31); f.closePath();
+  fill(ctx, f, lg(ctx, 28, 0, 58, 0, 0, '#ff6a52', 1, '#c8331f')); stroke(ctx, f, OUT, 2);
+  fill(ctx, circ(43, 20, 5.5), '#fff2e0');
+  fill(ctx, circ(26, 7, 3.2), '#f0c24a'); stroke(ctx, circ(26, 7, 3.2), OUT, 1.2);
+}
 function itemBattery(ctx) {
   cylV(ctx, 18, 12, 28, 46, '#6d7884', { ry: 7 });
   fill(ctx, rrect(18, 30, 28, 9, 0), '#d68a2c'); stroke(ctx, rrect(18, 30, 28, 9, 0), 'rgba(0,0,0,.5)', 1);
@@ -1830,7 +1838,7 @@ const ITEM_NAMES = ['wood', 'coal', 'stone', 'iron-ore', 'copper-ore', 'iron-pla
   'express-transport-belt', 'underground-belt', 'fast-underground-belt', 'express-underground-belt', 'splitter', 'fast-splitter', 'express-splitter', 'burner-inserter',
   'inserter', 'long-handed-inserter', 'fast-inserter', 'small-electric-pole', 'medium-electric-pole', 'big-electric-pole', 'pipe', 'pipe-to-ground', 'storage-tank',
   'small-lamp', 'burner-mining-drill', 'electric-mining-drill', 'offshore-pump', 'boiler', 'steam-engine', 'solar-panel', 'accumulator', 'stone-furnace', 'steel-furnace',
-  'electric-furnace', 'assembling-machine-1', 'assembling-machine-2', 'assembling-machine-3', 'oil-refinery', 'chemical-plant', 'pumpjack', 'lab', 'rocket-silo'];
+  'electric-furnace', 'assembling-machine-1', 'assembling-machine-2', 'assembling-machine-3', 'oil-refinery', 'chemical-plant', 'pumpjack', 'lab', 'rocket-silo', 'flag'];
 const ITEM_PAINT = {
   wood: itemWood,
   coal: (c) => itemOre(c, 'coal'), stone: (c) => itemOre(c, 'stone'), 'iron-ore': (c) => itemOre(c, 'iron-ore'), 'copper-ore': (c) => itemOre(c, 'copper-ore'),
@@ -1853,6 +1861,7 @@ const ITEM_PAINT = {
   'burner-inserter': (c) => itemInserter(c, 'burner-inserter'), inserter: (c) => itemInserter(c, 'inserter'),
   'long-handed-inserter': (c) => itemInserter(c, 'long-handed-inserter'), 'fast-inserter': (c) => itemInserter(c, 'fast-inserter'),
   pipe: itemPipe,
+  flag: itemFlag,
 };
 const FLUID_COL = { water: '#2c6fd6', steam: '#d8d8d8', 'crude-oil': '#3a2140', 'petroleum-gas': '#7a4a9c', 'sulfuric-acid': '#d6c43a' };
 function drawFluid(ctx, name) {

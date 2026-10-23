@@ -516,6 +516,13 @@ export class Game {
     p.craft.push(...entries);
     this.events.push({ t: 'craft-queued', pid: p.pid });
   }
+  // territory battle: one flag leaves the inventory; the device that sent it updates the Japan map
+  c_useFlag(p, c) {
+    if (this.sandbox) return this.err(p.pid, 'クリエイティブのワールドでは旗を使えません');
+    if (invCount(p.inv, 'flag') < 1) return this.err(p.pid, '旗を持っていません');
+    invRemove(p.inv, 'flag', 1);
+    this.events.push({ t: 'flag-used', pid: p.pid, cell: c.cell | 0, nonce: c.nonce | 0 });
+  }
   c_cancelCraft(p) {
     const back = [];
     for (const en of p.craft) for (const pair of en.con) back.push(pair);

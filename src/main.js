@@ -8,6 +8,7 @@ import { buildIconSheet, iconHTML } from './ui/icons.js';
 import { OfflineSession, HostSession, ClientSession, listLobbies, OPEN_ROOM, OPEN_BROKER, probeOpenWorld, newerCopy } from './net/session.js';
 import { listSaves, putSave, getSave, deleteSave } from './saves.js';
 import { TECHS, ITEMS } from './data.js';
+import { JintoriView } from './jintori/view.js';
 
 const COLORS = ['#f0a64a', '#e8574a', '#5ea2d8', '#73b65b', '#c77ddb', '#e3d34f', '#4fd1c5', '#f2f2f2'];
 const OPEN_SAVE_ID = 'open-world'; // this device's copy of the shared world
@@ -54,6 +55,7 @@ const app = {
     this.session = null;
     this.ui && this.ui.closeSheet();
     document.getElementById('hud').hidden = true;
+    if (app.jintori) app.jintori.close();
     showTitle();
   },
 };
@@ -113,7 +115,7 @@ async function enterGame(session) {
   cam.zoom = 46 * app.dpr;
   document.getElementById('title').hidden = true;
   document.getElementById('hud').hidden = false;
-  if (!app.ui) { app.ui = new UI(app); app.ctrl = new Controller(app); }
+  if (!app.ui) { app.ui = new UI(app); app.ctrl = new Controller(app); app.jintori = new JintoriView(app); }
   bindSession(session);
   app.ctrl.setMode('normal');
   app.ui.onModeChange();
@@ -299,7 +301,8 @@ function frame(now) {
   if (app.renderer.game !== g) app.renderer.setMap(g);
   handleEvents(g);
   app.ctrl.update(dt);
-  app.renderer.render(dt, s.localPid);
+  if (app.jintori.isOpen) app.jintori.update(now); // the map covers the factory: no need to draw it
+  else app.renderer.render(dt, s.localPid);
   app.ui.update(now);
   const cam = app.renderer.cam;
   const p = profile();
@@ -320,7 +323,8 @@ function handleEvents(g) {
   let crafted = 0;
   for (const e of evs) {
     switch (e.t) {
-      case 'err': if (e.pid === me) { app.ui.toast(e.msg, 'err'); audio.play('error'); } break;
+      case 'err': if (e.pid === me) { app.ui.toast(e.msg, 'err'); audio.play('error'); app.jintori.onError(e.msg); } break;
+      case 'flag-used': if (e.pid === me) app.jintori.onFlagUsed(e); break;
       case 'built': if (e.pid !== me && near(e.x, e.y)) audio.play('place', { volume: 0.4 }); break;
       case 'removed': if (e.pid !== me && near(e.x, e.y)) audio.play('remove', { volume: 0.4 }); break;
       case 'crafted': if (e.pid === me) crafted++; break;
