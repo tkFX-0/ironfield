@@ -3,8 +3,8 @@
 // for when no server address is set. The screen uses the same methods on both.
 import * as J from './rules.js';
 
-// the shared server; empty until it is deployed. ?jt=<address> overrides it (?jt=local: this device only)
-const SERVER = '';
+// the shared server (Cloudflare Workers). ?jt=<address> overrides it (?jt=local: this device only)
+const SERVER = 'https://ironfield-jintori.ironfield-game.workers.dev';
 export function makeJintori() {
   let s = SERVER;
   try { const q = new URLSearchParams(location.search).get('jt'); if (q) s = q === 'local' ? '' : q; } catch { /* not in a browser */ }

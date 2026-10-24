@@ -1,6 +1,6 @@
 // Cloudflare settings for the territory battle server. Run from this folder:
 //   npx wrangler dev        (on this computer, http://localhost:8787, no account needed)
-//   npx wrangler deploy     (needs `npx wrangler login` once, done by the account owner)
+//   npx wrangler deploy     (needs `npx wrangler login` once, or CLOUDFLARE_API_TOKEN; live at https://ironfield-jintori.ironfield-game.workers.dev)
 {
   "name": "ironfield-jintori",
   "main": "worker.js",
