@@ -86,6 +86,38 @@ ok('defence stops at the top', () => {
   assert.equal(J.flagAction(m, p, i).kind, null);
 });
 
+ok('crowd correction: more players, weaker flags, but more in total', () => {
+  assert.equal(J.flagPower(1), 100);
+  assert.equal(J.flagPower(J.CROWD_BASE), 100);
+  assert.equal(J.flagPower(20), 50);
+  for (let n = 1; n < 2000; n++) {
+    assert.ok(J.flagPower(n + 1) <= J.flagPower(n), 'never stronger with more players');
+    // (whole percents, so one more player can round the total down a little; twice the players never does)
+    assert.ok(2 * n * J.flagPower(2 * n) > n * J.flagPower(n), 'a prefecture grows with its players');
+  }
+  assert.equal(J.flagPower(100000), 10, 'a floor, so a flag always does something');
+});
+
+ok('weak flags add up on the square', () => {
+  const m = J.newMap(1000);
+  const p = 13, i = J.NEIGH[PREFS[p].capital].find(j => !m.owner[j]);
+  const r1 = J.applyFlag(m, p, i, 40);
+  assert.equal(r1.partial, true); assert.equal(m.owner[i], 0); assert.equal(m.prog[i], 40);
+  J.applyFlag(m, p, i, 40);
+  const r3 = J.applyFlag(m, p, i, 40);
+  assert.equal(r3.captured, true); assert.equal(m.owner[i], p);
+  assert.equal(m.prog[i], 0, 'the total starts over once the square changes hands');
+  // a full flag works exactly like useFlag
+  const r4 = J.applyFlag(m, p, i);
+  assert.equal(r4.kind, 'defend'); assert.equal(m.def[i], 1);
+  // another prefecture adding up on the same square wipes the earlier total
+  const q = 14;
+  m.owner[J.NEIGH[i].find(j => !m.owner[j])] = q;
+  J.applyFlag(m, p, i, 50); assert.equal(m.progBy[i], p);
+  J.applyFlag(m, q, i, 30); assert.equal(m.progBy[i], q); assert.equal(m.prog[i], 30);
+  assert.equal(J.applyFlag(m, q, PREFS[p].capital, 50).kind, null, 'refused flags change nothing');
+});
+
 ok('the stand-in players fill about a month of map, and are repeatable', () => {
   const day = J.dayIndex(jst('2026-10-31T12:00:00'));
   const t = Date.now();

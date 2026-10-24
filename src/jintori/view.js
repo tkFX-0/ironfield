@@ -18,19 +18,21 @@ export class JintoriView {
     this.store = store;
     this.isOpen = false;
     this.sel = -1;
-    this.pending = null;   // a flag sent to the factory, waiting for it to leave the inventory
+    this.pending = null;   // a flag on its way to the map, waiting for the answer
     this.msg = null;       // { text, kind } shown on the card after an action
     this.sheet = null;     // 'pref' | 'rank'
     this.cam = null;
     this.at = new Int32Array(GRID.cols * GRID.rows).fill(-1);
     for (let i = 0; i < J.N; i++) this.at[J.cellY(i) * GRID.cols + J.cellX(i)] = i;
     this._front = null;
+    // the server turned something down (for example choosing a prefecture)
+    store.onError = text => { if (this.isOpen) { this.msg = { text, kind: 'err' }; this._renderAll(); } else if (app.ui) app.ui.toast(text, 'err'); };
   }
 
   // ------------------------------------------------------------ open / close
   open() {
     if (!this.el) this._build();
-    this.store.refresh(Date.now());
+    this.store.refresh(Date.now(), true);
     this._front = null;
     this.isOpen = true;
     this.el.hidden = false;
@@ -52,18 +54,19 @@ export class JintoriView {
   update(now) {
     if (now - (this._lastUi || 0) < 500) return;
     this._lastUi = now;
-    if (this.store.refresh(Date.now())) { this._front = null; this._draw(); }
-    if (this.pending && now - this.pending.t > 6000) { this.pending = null; this._renderCard(); }
+    if (this.store.refresh(Date.now(), true)) { this._front = null; this._draw(); this._renderStatus(); this._renderCard(); if (this.sheet === 'rank') this._renderSheet(); }
     const sig = this._flags() + ':' + this.store.wallet.allow + ':' + Math.floor(Date.now() / 60000);
     if (sig !== this._statusSig) { this._statusSig = sig; this._renderStatus(); this._renderCard(); }
   }
 
-  // the factory took one flag out of the inventory: it lands on the map now
-  onFlagUsed(e) {
-    this.pending = null;
-    const r = this.store.commit(e.cell, Date.now());
+  // the factory took the flag out of the inventory (the map already has it: see _useFlag)
+  onFlagUsed() {}
+  onError() {}
+
+  _result(r) {
     const P = PREFS[this.store.pref];
-    if (!r.kind) this.msg = { text: '旗は使いましたが、マスが変わっていて取れませんでした: ' + r.why, kind: 'err' };
+    if (!r.kind) this.msg = { text: r.why, kind: 'err' };
+    else if (r.partial) this.msg = { text: `${P.name}は遊んでいる人が多いので、旗1本の力は${r.power}%です。このマスに力がたまりました（${r.prog}%。100%で1本分）`, kind: 'good' };
     else if (r.kind === 'take') this.msg = { text: `このマスを${P.name}のものにしました`, kind: 'good' };
     else if (r.kind === 'defend') this.msg = { text: `守りが ${r.def} になりました`, kind: 'good' };
     else if (r.captured) this.msg = { text: `このマスを奪って${P.name}のものにしました`, kind: 'good' };
@@ -71,12 +74,6 @@ export class JintoriView {
     this.app.audio.play(r.kind ? 'research-done' : 'error');
     this._front = null;
     if (this.isOpen) { this._draw(); this._renderStatus(); this._renderCard(); if (this.sheet === 'rank') this._renderSheet(); }
-  }
-  onError(text) {
-    if (!this.pending) return;
-    this.pending = null;
-    this.msg = { text, kind: 'err' };
-    if (this.isOpen) this._renderCard();
   }
 
   // small summary for the factory HUD chip
@@ -156,12 +153,17 @@ export class JintoriView {
     st.refresh(Date.now());
     if (st.wallet.allow <= 0) { this.msg = { text: '今日の旗はもう使い切りました。朝5時に3本増えます', kind: 'err' }; this._renderCard(); return; }
     if (this._flags() < 1) { this.msg = { text: '旗を持っていません。工場で作りましょう', kind: 'err' }; this._renderCard(); return; }
-    const nonce = (Math.random() * 1e9) | 0;
-    this.pending = { cell: i, nonce, t: performance.now() };
+    // the map (the server) first, then the factory takes the flag out of the inventory, so a flag is
+    // never lost to a bad connection
+    this.pending = { cell: i };
     this.msg = null;
-    this.app.submit({ type: 'useFlag', cell: i, nonce });
     this.app.audio.play('place');
     this._renderCard();
+    Promise.resolve(st.commit(i, Date.now())).then(r => {
+      this.pending = null;
+      if (r.kind) this.app.submit({ type: 'useFlag', cell: i, nonce: (Math.random() * 1e9) | 0 });
+      this._result(r);
+    });
   }
 
   _renderAll() { this._renderStatus(); this._renderCard(); this._renderSheet(); this._draw(); }
@@ -172,12 +174,19 @@ export class JintoriView {
     this.el.querySelector('#jt-season').textContent = m ? `${parseInt(m[2], 10)}月のシーズン` : '';
     const left = J.nextResetAt(Date.now()) - Date.now();
     const hh = Math.floor(left / 3600000), mm = Math.floor(left / 60000) % 60;
+    const pw = st.shared && st.pref ? st.power() : J.FULL;
+    const note = this.el.querySelector('.jt-note');
+    note.textContent = !st.shared ? '見本：ほかの人の動きは、コンピューターがまねしています'
+      : st.online === false ? 'サーバーにつながっていません。前に見た地図を出しています'
+      : '全国のみんなと同じ地図です';
+    note.classList.toggle('err', st.shared && st.online === false);
     const pips = Array.from({ length: J.MAX_ALLOW }, (_, k) => `<i class="${k < w.allow ? 'on' : ''}"></i>`).join('');
     this.el.querySelector('#jt-status').innerHTML = `
       <button class="jt-pref" data-j="pref-open" aria-label="自分の県">${P ? `<span class="dot" style="background:${P.color}"></span><b>${esc(P.name)}</b>` : '<b>県を選ぶ</b>'}</button>
       <div class="jt-stat"><span class="muted">今日使える旗</span><div class="row" style="gap:6px;flex-wrap:nowrap"><b class="big">${w.allow}</b><span class="jt-pips" aria-hidden="true">${pips}</span></div></div>
       <div class="jt-stat"><span class="muted">持っている旗</span><div class="row" style="gap:4px;flex-wrap:nowrap">${iconHTML('item:flag', 22)}<b class="big">${this._flags()}</b></div></div>
       <div class="jt-stat"><span class="muted">朝5時に3本ふえる</span><b>あと${hh}時間${mm}分</b></div>
+      ${pw < J.FULL ? `<div class="jt-stat"><span class="muted">旗1本の力（人の多い県は小さい）</span><b>${pw}%</b></div>` : ''}
       ${w.streak > 1 && w.lastDay >= J.dayIndex(Date.now()) - 1 ? `<div class="jt-stat"><span class="muted">続けた日数</span><b>${w.streak}日</b></div>` : ''}`;
   }
 
@@ -194,20 +203,22 @@ export class JintoriView {
     const owner = o ? `<span class="chip"><span class="dot" style="background:${PREFS[o].color}"></span>${esc(PREFS[o].name)}</span>` : '<span class="chip">だれのものでもない</span>';
     const defPips = cap ? '<b>県庁（取られません）</b>' : o ? `<span class="jt-pips def">${Array.from({ length: J.MAX_DEF }, (_, k) => `<i class="${k < def ? 'on' : ''}"></i>`).join('')}</span><span class="muted">${def} / ${J.MAX_DEF}</span>` : '<span class="muted">なし</span>';
     const a = st.action(i);
+    const by = st.map.progBy[i], pg = st.map.prog[i];
+    const prog = by && pg ? `<div class="row" style="gap:6px"><span class="muted">たまった旗の力</span><span class="dot" style="background:${PREFS[by].color}"></span><b>${esc(PREFS[by].short)} ${pg}%</b></div>` : '';
     let btn = '', why = '';
     if (a.kind) {
       const label = a.kind === 'take' ? '旗を1本使って取る'
         : a.kind === 'defend' ? '旗を1本使って守りを上げる'
         : def > 0 ? `旗を1本使って守りを崩す（取るまで あと${def + 1}本）` : '旗を1本使って奪う';
       const noFlag = this._flags() < 1, noAllow = st.wallet.allow <= 0;
-      btn = `<button class="btn primary jt-use" data-j="use" ${noFlag || noAllow || this.pending ? 'disabled' : ''}>${iconHTML('item:flag', 22)}${this.pending ? '旗を運んでいます…' : label}</button>`;
+      btn = `<button class="btn primary jt-use" data-j="use" ${noFlag || noAllow || this.pending ? 'disabled' : ''}>${iconHTML('item:flag', 22)}${this.pending ? '旗を届けています…' : label}</button>`;
       if (noAllow) why = '今日の旗はもう使い切りました。朝5時に3本増えます（使わなかった分は2日分までたまります）。';
       else if (noFlag) why = '旗を持っていません。工場で作って、持ち物に入れておきましょう。';
     } else why = a.why;
     card.innerHTML = `${msg}
       <div class="row" style="gap:8px"><b>${esc(home.name)}のマス</b>${owner}</div>
       <div class="row" style="gap:6px"><span class="muted">守り</span>${defPips}</div>
-      ${btn}${why ? `<div class="muted" style="font-size:12px">${esc(why)}</div>` : ''}`;
+      ${prog}${btn}${why ? `<div class="muted" style="font-size:12px">${esc(why)}</div>` : ''}`;
   }
 
   _renderSheet() {

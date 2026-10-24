@@ -9,7 +9,7 @@ import { HostSession, ClientSession, ViewSession, listLobbies, OPEN_BROKER, prob
 import { putSave, getSave } from './saves.js';
 import { TECHS, ITEMS } from './data.js';
 import { JintoriView } from './jintori/view.js';
-import { LocalJintori } from './jintori/store.js';
+import { makeJintori } from './jintori/store.js';
 import { PREFS } from './jintori/japan.js';
 import { PLOT_AT, PLOT_COLS, PLOT_ROWS, plotSeed, plotPlace, plotAtCell } from './plots.js';
 
@@ -25,7 +25,7 @@ const app = {
   dpr: Math.min(window.devicePixelRatio || 1, 2),
   renderer: null, ui: null, ctrl: null, session: null, audio,
   running: false, mouseTile: null,
-  jintoriStore: new LocalJintori(), // shared by the title screen (your prefecture = your plot) and the map
+  jintoriStore: makeJintori(), // shared by the title screen (your prefecture = your plot) and the map
   submit(cmd) { if (this.session) this.session.submit(cmd); },
   shareUrl() { return location.origin + location.pathname; }, // everyone picks their own prefecture's plot
   async saveNow(manual = false) {

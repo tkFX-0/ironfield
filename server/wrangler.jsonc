@@ -1,0 +1,14 @@
+// Cloudflare settings for the territory battle server. Run from this folder:
+//   npx wrangler dev        (on this computer, http://localhost:8787, no account needed)
+//   npx wrangler deploy     (needs `npx wrangler login` once, done by the account owner)
+{
+  "name": "ironfield-jintori",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [{ "name": "MAP", "class_name": "JapanMap" }]
+  },
+  // SQLite-backed Durable Objects are the kind the free plan allows
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["JapanMap"] }],
+  "observability": { "enabled": true }
+}

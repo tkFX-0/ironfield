@@ -8,6 +8,8 @@ export const MAX_ALLOW = DAILY_FLAGS * (1 + CARRY_DAYS);
 export const MAX_DEF = 5;              // defence a square can be raised to
 export const RESET_HOUR_JST = 5;       // the day turns over at 05:00 Japan time
 export const N = CELLS.length / 3;
+export const FULL = 100;               // a whole flag's strength, in hundredths
+export const CROWD_BASE = 5;           // up to this many players a day, each flag has full strength
 
 const DAY_MS = 86400000;
 const SHIFT_MS = (9 - RESET_HOUR_JST) * 3600000; // JST is UTC+9; the game day starts 5 hours into it
@@ -64,7 +66,7 @@ export function spendWallet(w, day) {
 // ------------------------------------------------------------------ the map of one season
 // a fresh map for the season that `day` belongs to; m.day = last day already played out
 export function newMap(day) {
-  const m = { season: seasonOf(day), day: seasonStartDay(day) - 1, owner: new Uint8Array(N), def: new Uint8Array(N) };
+  const m = { season: seasonOf(day), day: seasonStartDay(day) - 1, owner: new Uint8Array(N), def: new Uint8Array(N), prog: new Uint8Array(N), progBy: new Uint8Array(N) };
   for (let p = 1; p <= 47; p++) { m.owner[PREFS[p].capital] = p; m.def[PREFS[p].capital] = MAX_DEF; }
   return m;
 }
@@ -92,6 +94,28 @@ export function useFlag(m, pref, i) {
   else if (a.kind === 'attack' && m.def[i] > 0) { m.def[i]--; return { kind: 'attack', captured: false, def: m.def[i] }; }
   else { m.owner[i] = pref; m.def[i] = 0; }
   return { kind: a.kind, captured: a.kind !== 'defend', def: m.def[i] };
+}
+
+// crowd correction: in a prefecture with many players each flag is weaker, so a crowded prefecture
+// still grows faster in total (strength ~ sqrt(players)) but cannot simply swamp a quiet one.
+export function flagPower(players) {
+  return players <= CROWD_BASE ? FULL : Math.max(10, Math.round(FULL * Math.sqrt(CROWD_BASE / players)));
+}
+// a flag of `power` hundredths. Weak flags add up on the square (m.prog, for prefecture m.progBy);
+// each time the total reaches a whole flag, the square takes one step as useFlag would.
+// Another prefecture starting to add up on the same square wipes the earlier total.
+export function applyFlag(m, pref, i, power = FULL) {
+  const a = flagAction(m, pref, i);
+  if (!a.kind) return a;
+  if (power < FULL) {
+    if (m.progBy[i] !== pref) { m.progBy[i] = pref; m.prog[i] = 0; }
+    const p = m.prog[i] + power;
+    if (p < FULL) { m.prog[i] = p; return { kind: a.kind, partial: true, prog: p, def: m.def[i] }; }
+    m.prog[i] = p - FULL;
+  }
+  const r = useFlag(m, pref, i);
+  if (r.captured) { m.prog[i] = 0; m.progBy[i] = 0; }
+  return r;
 }
 
 export function counts(m) {
